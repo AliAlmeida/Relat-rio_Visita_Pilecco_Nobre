@@ -231,6 +231,14 @@
 </header>
 
 <main>
+  <section class="card" id="drive-card">
+    <h2>Sincronização com Google Drive (opcional)</h2>
+    <div id="drive-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">
+      Conecte pra salvar seu rascunho automaticamente e guardar os relatórios gerados no seu Drive.
+    </div>
+    <button class="btn btn-add" id="btn-google-signin" style="width:100%;">Entrar com Google</button>
+  </section>
+
   <section class="card" id="meta-card">
     <h2>Dados da visita</h2>
     <div id="meta-fields"></div>
@@ -248,9 +256,18 @@
   </div>
 </footer>
 
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
 (function () {
   "use strict";
+
+  // ==========================================================
+  // CONFIGURAÇÃO DO GOOGLE — troque pelo seu Client ID depois
+  // de seguir os passos no Google Cloud Console.
+  // ==========================================================
+  var GOOGLE_CLIENT_ID = '1020864544158-4tci7m1nblsfqvadan9avtllav094mm8.apps.googleusercontent.com';
+  var DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+  var REPORTS_FOLDER_NAME = 'Relatórios de Visita';
 
   // ---------- state ----------
   function uid() { return 'id' + Math.random().toString(36).slice(2, 10); }
@@ -276,7 +293,7 @@
   function newObservacao() { return { id: uid(), texto: '', fotos: [] }; }
   function newAlerta() { return { id: uid(), texto: '', fotos: [] }; }
   function newOportunidade() { return { id: uid(), texto: '' }; }
-  function newPreco() { return { id: uid(), produto: '', valor: '' }; }
+  function newPreco() { return { id: uid(), produto: '', valor: '', oferta: false }; }
   function newStore() {
     return {
       id: uid(),
@@ -336,6 +353,209 @@
       statusEl.className = 'status err';
       statusEl.textContent = 'Não foi possível carregar os componentes necessários. Verifique sua internet.';
     });
+  }
+
+  // ---------- Google Drive sync (optional) ----------
+  var driveAccessToken = null;
+  var tokenClient = null;
+  var driveStatusEl = document.getElementById('drive-status');
+  var btnGoogleSignin = document.getElementById('btn-google-signin');
+  var autosaveTimer = null;
+  var reportsFolderIdCache = null;
+
+  function draftFileName() { return 'rascunho_relatorio_' + state.meta.data + '.json'; }
+
+  function setDriveStatus(text) { if (driveStatusEl) driveStatusEl.textContent = text; }
+
+  function initGoogleAuth() {
+    if (!window.google || !google.accounts || !google.accounts.oauth2) {
+      setTimeout(initGoogleAuth, 300);
+      return;
+    }
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: DRIVE_SCOPE,
+      callback: function (resp) {
+        if (resp && resp.access_token) {
+          driveAccessToken = resp.access_token;
+          btnGoogleSignin.textContent = '✓ Conectado ao Google Drive';
+          setDriveStatus('Conectado. Salvando seu progresso automaticamente.');
+          tryRestoreDraftForToday();
+        } else {
+          setDriveStatus('Não foi possível conectar. Tente novamente.');
+        }
+      }
+    });
+  }
+
+  if (btnGoogleSignin) {
+    btnGoogleSignin.addEventListener('click', function () {
+      if (GOOGLE_CLIENT_ID.indexOf('1020864544158-4tci7m1nblsfqvadan9avtllav094mm8.apps.googleusercontent.com') === 0) {
+        setDriveStatus('Ainda falta configurar o Client ID do Google no código desta ferramenta.');
+        return;
+      }
+      if (!tokenClient) { setDriveStatus('Ainda carregando o Google. Tente de novo em instantes.'); return; }
+      tokenClient.requestAccessToken();
+    });
+  }
+
+  function driveFetch(url, options) {
+    options = options || {};
+    options.headers = options.headers || {};
+    options.headers['Authorization'] = 'Bearer ' + driveAccessToken;
+    return fetch(url, options).then(function (res) {
+      if (res.status === 401) {
+        driveAccessToken = null;
+        btnGoogleSignin.textContent = 'Entrar com Google';
+        setDriveStatus('Sessão do Google expirou. Clique em "Entrar com Google" de novo.');
+        throw new Error('token expirado');
+      }
+      return res;
+    });
+  }
+
+  function findFileByName(name) {
+    var q = encodeURIComponent("name = '" + name.replace(/'/g, "\\'") + "' and trashed = false");
+    return driveFetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&spaces=drive&fields=files(id,name)')
+      .then(function (res) { return res.json(); })
+      .then(function (data) { return (data.files && data.files[0]) || null; });
+  }
+
+  function saveJSONFile(name, obj, existingId) {
+    var boundary = 'foo_bar_baz_' + Math.random().toString(36).slice(2);
+    var metadata = { name: name, mimeType: 'application/json' };
+    var body = '--' + boundary + '\r\n' +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      JSON.stringify(metadata) + '\r\n' +
+      '--' + boundary + '\r\n' +
+      'Content-Type: application/json\r\n\r\n' +
+      JSON.stringify(obj) + '\r\n' +
+      '--' + boundary + '--';
+    var url = existingId
+      ? 'https://www.googleapis.com/upload/drive/v3/files/' + existingId + '?uploadType=multipart'
+      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+    return driveFetch(url, {
+      method: existingId ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'multipart/related; boundary=' + boundary },
+      body: body
+    }).then(function (res) { return res.json(); });
+  }
+
+  function buildDraftSnapshot() {
+    return {
+      meta: state.meta,
+      stores: state.stores.map(function (s) {
+        return {
+          nome: s.nome, contatoCargo: s.contatoCargo, contatoNome: s.contatoNome, contatoTelefone: s.contatoTelefone,
+          observacoes: s.observacoes.map(function (o) { return { texto: o.texto, fotoCount: o.fotos.length }; }),
+          precos: s.precos,
+          alertas: s.alertas.map(function (a) { return { texto: a.texto, fotoCount: a.fotos.length }; }),
+          oportunidades: s.oportunidades,
+          leituraEstrategica: s.leituraEstrategica
+        };
+      })
+    };
+  }
+
+  function scheduleAutosave() {
+    if (!driveAccessToken) return;
+    clearTimeout(autosaveTimer);
+    setDriveStatus('Alterações pendentes...');
+    autosaveTimer = setTimeout(function () {
+      setDriveStatus('Salvando rascunho...');
+      var name = draftFileName();
+      findFileByName(name).then(function (existing) {
+        return saveJSONFile(name, buildDraftSnapshot(), existing ? existing.id : null);
+      }).then(function () {
+        var now = new Date();
+        setDriveStatus('Rascunho salvo às ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + '.');
+      }).catch(function (err) {
+        console.error(err);
+        setDriveStatus('Não consegui salvar o rascunho agora. Vai tentar de novo na próxima alteração.');
+      });
+    }, 3000);
+  }
+
+  function tryRestoreDraftForToday() {
+    var name = draftFileName();
+    findFileByName(name).then(function (existing) {
+      if (!existing) return;
+      var temEntradaReal = state.stores.some(function (s) { return s.nome || s.observacoes.some(function (o) { return o.texto; }); });
+      if (temEntradaReal) return;
+      return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id + '?alt=media')
+        .then(function (res) { return res.json(); })
+        .then(function (draft) {
+          if (!confirm('Encontrei um rascunho salvo de hoje (' + state.meta.data + '). Deseja continuar de onde parou?')) return;
+          state.meta = draft.meta || state.meta;
+          state.stores = (draft.stores || []).map(function (s) {
+            return {
+              id: uid(), aberta: false,
+              nome: s.nome || '', contatoCargo: s.contatoCargo || '', contatoNome: s.contatoNome || '', contatoTelefone: s.contatoTelefone || '',
+              observacoes: (s.observacoes || []).map(function (o) {
+                var obs = newObservacao(); obs.texto = o.texto || '';
+                if (o.fotoCount) obs.texto += (obs.texto ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+                return obs;
+              }),
+              precos: s.precos || [],
+              alertas: (s.alertas || []).map(function (a) {
+                var al = newAlerta(); al.texto = a.texto || '';
+                if (a.fotoCount) al.texto += (al.texto ? '\n' : '') + '[' + a.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+                return al;
+              }),
+              oportunidades: s.oportunidades || [],
+              leituraEstrategica: s.leituraEstrategica || ''
+            };
+          });
+          if (state.stores.length) state.stores[state.stores.length - 1].aberta = true;
+          else state.stores.push(newStore());
+          renderMeta();
+          renderStores();
+        });
+    }).catch(function (err) { console.error(err); });
+  }
+
+  function getOrCreateReportsFolder() {
+    if (reportsFolderIdCache) return Promise.resolve(reportsFolderIdCache);
+    var q = encodeURIComponent("name = '" + REPORTS_FOLDER_NAME + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false");
+    return driveFetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&spaces=drive&fields=files(id,name)')
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (data.files && data.files[0]) { reportsFolderIdCache = data.files[0].id; return reportsFolderIdCache; }
+        return driveFetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: REPORTS_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' })
+        }).then(function (res) { return res.json(); }).then(function (folder) {
+          reportsFolderIdCache = folder.id;
+          return reportsFolderIdCache;
+        });
+      });
+  }
+
+  function uploadDocxToDrive(blob, filename) {
+    if (!driveAccessToken) return Promise.resolve(false);
+    return getOrCreateReportsFolder().then(function (folderId) {
+      return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+        body: JSON.stringify({ name: filename, parents: [folderId] })
+      });
+    }).then(function (initRes) {
+      var uploadUrl = initRes.headers.get('Location');
+      return fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+        body: blob
+      });
+    }).then(function (res) { return res.ok; })
+      .then(function (ok) {
+        if (ok) {
+          return findFileByName(draftFileName()).then(function (existing) {
+            if (existing) return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id, { method: 'DELETE' });
+          }).then(function () { return true; });
+        }
+        return false;
+      }).catch(function (err) { console.error(err); return false; });
   }
 
   // ---------- image compression ----------
@@ -402,7 +622,7 @@
     var input = el(type === 'textarea' ? 'textarea' : 'input', { placeholder: placeholder || '' });
     if (type && type !== 'textarea') input.setAttribute('type', type);
     input.value = value || '';
-    input.addEventListener('input', function () { oninput(input.value); });
+    input.addEventListener('input', function () { oninput(input.value); scheduleAutosave(); });
     wrap.appendChild(input);
     return wrap;
   }
@@ -436,21 +656,29 @@
   }
 
   function renderPhotoAdder(onFiles) {
-    var label = el('label', { class: 'add-photo-btn' });
-    label.textContent = '📷 Adicionar foto';
-    var input = el('input', { type: 'file', accept: 'image/*', multiple: 'multiple' });
-    input.addEventListener('change', function (e) {
-      var files = Array.prototype.slice.call(e.target.files || []);
-      if (!files.length) return;
-      label.textContent = 'Processando...';
-      Promise.all(files.map(function (f) { return compressImage(f); })).then(function (fotos) {
-        onFiles(fotos);
-        label.textContent = '📷 Adicionar foto';
-        input.value = '';
+    function makeButton(text, useCameraCapture) {
+      var label = el('label', { class: 'add-photo-btn' });
+      label.textContent = text;
+      var attrs = { type: 'file', accept: 'image/*', multiple: 'multiple' };
+      if (useCameraCapture) attrs.capture = 'environment';
+      var input = el('input', attrs);
+      input.addEventListener('change', function (e) {
+        var files = Array.prototype.slice.call(e.target.files || []);
+        if (!files.length) return;
+        label.textContent = 'Processando...';
+        Promise.all(files.map(function (f) { return compressImage(f); })).then(function (fotos) {
+          onFiles(fotos);
+          label.textContent = text;
+          input.value = '';
+        });
       });
-    });
-    label.appendChild(input);
-    return label;
+      label.appendChild(input);
+      return label;
+    }
+    var wrap = el('div', { style: 'display:flex; gap:8px; flex-wrap:wrap;' });
+    wrap.appendChild(makeButton('📷 Tirar foto', true));
+    wrap.appendChild(makeButton('🖼️ Escolher da galeria', false));
+    return wrap;
   }
 
   function renderStores() {
@@ -458,6 +686,7 @@
     state.stores.forEach(function (store, storeIdx) {
       storesContainerEl.appendChild(renderStore(store, storeIdx));
     });
+    scheduleAutosave();
   }
 
   function renderStore(store, storeIdx) {
@@ -534,7 +763,7 @@
     var leaField = el('textarea', { placeholder: 'Resumo da leitura estratégica da loja...' });
     leaField.value = store.leituraEstrategica || '';
     leaField.style.minHeight = '90px';
-    leaField.addEventListener('input', function () { store.leituraEstrategica = leaField.value; });
+    leaField.addEventListener('input', function () { store.leituraEstrategica = leaField.value; scheduleAutosave(); });
     lea.appendChild(leaField);
     body.appendChild(lea);
 
@@ -552,7 +781,7 @@
       var top = el('div', { class: 'entry-top' });
       var ta = el('textarea', { placeholder: opts.placeholder });
       ta.value = item.texto || '';
-      ta.addEventListener('input', function () { item.texto = ta.value; });
+      ta.addEventListener('input', function () { item.texto = ta.value; scheduleAutosave(); });
       var rm = el('button', { class: 'btn-remove-entry' }, []); rm.textContent = '✕';
       rm.addEventListener('click', function () { opts.onRemove(idx); });
       top.appendChild(ta); top.appendChild(rm);
@@ -590,16 +819,26 @@
       var top = el('div', { class: 'entry-top' });
       var prodInput = el('input', { placeholder: 'Produto (ex: Pilecco Nobre 1kg)' });
       prodInput.value = preco.produto || '';
-      prodInput.addEventListener('input', function () { preco.produto = prodInput.value; });
+      prodInput.addEventListener('input', function () { preco.produto = prodInput.value; scheduleAutosave(); });
       var valorInput = el('input', { placeholder: 'Valor (ex: R$ 5,99 ou Ruptura)' });
       valorInput.value = preco.valor || '';
-      valorInput.addEventListener('input', function () { preco.valor = valorInput.value; });
+      valorInput.addEventListener('input', function () { preco.valor = valorInput.value; scheduleAutosave(); });
       var rm = el('button', { class: 'btn-remove-entry' }, []); rm.textContent = '✕';
       rm.addEventListener('click', function () { store.precos.splice(idx, 1); renderStores(); });
       top.appendChild(prodInput);
       top.appendChild(valorInput);
       top.appendChild(rm);
       entry.appendChild(top);
+
+      var ofertaRow = el('label', { style: 'display:flex; align-items:center; gap:6px; margin-top:8px; font-size:13px; color:var(--ink-soft); cursor:pointer;' });
+      var ofertaCheck = el('input', { type: 'checkbox' });
+      ofertaCheck.style.width = 'auto';
+      ofertaCheck.checked = !!preco.oferta;
+      ofertaCheck.addEventListener('change', function () { preco.oferta = ofertaCheck.checked; scheduleAutosave(); });
+      ofertaRow.appendChild(ofertaCheck);
+      ofertaRow.appendChild(document.createTextNode('Oferta'));
+      entry.appendChild(ofertaRow);
+
       section.appendChild(entry);
     });
 
@@ -709,13 +948,12 @@
         subhead('Preços');
         store.precos.forEach(function (p) {
           if (!p.produto && !p.valor) return;
-          children.push(new D.Paragraph({
-            children: [
-              new D.TextRun({ text: (p.produto || '') + ': ', bold: true }),
-              new D.TextRun({ text: p.valor || '' })
-            ],
-            spacing: { after: 40 }
-          }));
+          var runs = [
+            new D.TextRun({ text: (p.produto || '') + ': ', bold: true }),
+            new D.TextRun({ text: p.valor || '' })
+          ];
+          if (p.oferta) runs.push(new D.TextRun({ text: '  OFERTA', bold: true, color: 'B98A2E' }));
+          children.push(new D.Paragraph({ children: runs, spacing: { after: 40 } }));
         });
       }
 
@@ -775,6 +1013,12 @@
       statusEl.className = 'status ok';
       statusEl.textContent = 'Relatório gerado: ' + filename;
       btn.disabled = false;
+      if (driveAccessToken) {
+        statusEl.textContent += ' — enviando cópia pro Drive...';
+        uploadDocxToDrive(blob, filename).then(function (ok) {
+          statusEl.textContent = 'Relatório gerado: ' + filename + (ok ? ' (salvo no Drive também)' : ' (não consegui salvar no Drive)');
+        });
+      }
     }).catch(function (err) {
       console.error(err);
       statusEl.className = 'status err';
@@ -810,6 +1054,7 @@
   state.stores.push(newStore());
   renderStores();
   initLibraries();
+  initGoogleAuth();
 })();
 </script>
 </body>

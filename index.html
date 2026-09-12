@@ -240,6 +240,27 @@
   .tips-box .tips-body div { margin-bottom: 5px; }
   .tips-box .tips-formula { font-weight: 600; color: var(--ink); margin-bottom: 6px; }
   .tips-box .tips-vocab { margin-top: 6px; font-style: italic; }
+  .btn-ai {
+    background: var(--navy-tint); color: var(--navy);
+    border: 1px solid var(--navy);
+    border-radius: var(--radius);
+    padding: 6px 10px;
+    font-size: 12.5px; font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .btn-ai:disabled { opacity: 0.6; }
+  .ai-suggestion-box {
+    background: var(--navy-tint);
+    border: 1px solid var(--navy);
+    border-radius: var(--radius);
+    padding: 10px;
+    margin-top: 8px;
+    font-size: 13px;
+  }
+  .ai-suggestion-box .ai-label { font-weight: 700; color: var(--navy); margin-bottom: 4px; }
+  .ai-suggestion-box .ai-suggestion-text { white-space: pre-wrap; line-height: 1.4; }
+  .ai-suggestion-box .ai-btn-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 </style>
 </head>
 <body>
@@ -256,9 +277,21 @@
   <section class="card" id="drive-card">
     <h2>Sincronização com Google Drive (opcional)</h2>
     <div id="drive-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">
-      Conecte pra salvar seu rascunho automaticamente e guardar os relatórios gerados no seu Drive.
+      Conecte pra salvar seu rascunho automaticamente e guardar fotos e relatórios no seu Drive.
     </div>
     <button class="btn btn-add" id="btn-google-signin" style="width:100%;">Entrar com Google</button>
+    <button class="btn btn-remove-entry" id="btn-nova-visita" style="width:100%; margin-top:8px; text-align:center;">🗑 Descartar rascunho e iniciar nova visita</button>
+  </section>
+
+  <section class="card" id="ai-card">
+    <h2>Correção e leitura estratégica com IA (opcional)</h2>
+    <div id="ai-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">
+      Cole aqui sua chave da API da Anthropic (console.anthropic.com) para liberar os botões "✨ Melhorar texto" e "✨ Gerar Leitura Estratégica". A chave fica salva só neste aparelho — nunca é enviada para o GitHub. O uso da API é pago (cobrado direto na sua conta Anthropic, valores baixos por texto).
+    </div>
+    <div style="display:flex; gap:8px;">
+      <input type="password" id="ai-key-input" placeholder="sk-ant-..." style="flex:1;">
+      <button class="btn btn-add" id="btn-ai-key-save">Salvar</button>
+    </div>
   </section>
 
   <section class="card" id="meta-card">
@@ -277,6 +310,21 @@
     <div class="status" id="status"></div>
   </div>
 </footer>
+
+<div id="save-modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(34,40,31,0.55); z-index:50; align-items:center; justify-content:center; padding:16px;">
+  <div style="background:var(--card); border-radius:var(--radius); padding:18px; width:100%; max-width:420px; box-shadow:0 8px 24px rgba(0,0,0,0.25);">
+    <h3 style="margin:0 0 12px; color:var(--navy); font-size:16px;">Salvar relatório</h3>
+    <div class="field">
+      <label>Nome do arquivo</label>
+      <input type="text" id="save-modal-filename">
+    </div>
+    <div id="save-modal-path" style="font-size:12.5px; color:var(--ink-soft); margin-bottom:14px;"></div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-add" id="save-modal-cancel" style="flex:1;">Cancelar</button>
+      <button class="btn-generate" id="save-modal-confirm" style="flex:1.5; padding:10px;">Gerar relatório</button>
+    </div>
+  </div>
+</div>
 
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script>
@@ -323,11 +371,10 @@
     },
     precos: {
       dicas: [
-        'Produto: R$ X,XX',
-        'Produto: R$ X,XX em oferta (ou use a caixinha "Oferta" acima)',
-        'Produto: de R$ X,XX por R$ Y,YY  (preencha Valor + Valor da oferta)',
-        'Produto: sem etiqueta de preço',
-        'Produto: R$ X,XX abaixo/acima do [Concorrente]'
+        'Preencha o Preço Pilecco Nobre normalmente (ex: R$ 5,99)',
+        'Se estiver em promoção, marque a caixinha "Em promoção" e preencha o Preço promocional',
+        'Preencha Concorrente + Preço do concorrente para registrar a comparação',
+        'Use "Observação" para casos como "sem etiqueta de preço" ou detalhes extras'
       ]
     },
     alertas: {
@@ -374,6 +421,138 @@
     return details;
   }
 
+  // ---------- IA (Anthropic API, chave própria do usuário) ----------
+  var ANTHROPIC_API_KEY = null;
+  var AI_MODEL = 'claude-haiku-4-5-20251001';
+  var aiStatusEl = document.getElementById('ai-status');
+  var aiKeyInput = document.getElementById('ai-key-input');
+  var btnAiKeySave = document.getElementById('btn-ai-key-save');
+
+  function setAiStatus(text) { if (aiStatusEl) aiStatusEl.textContent = text; }
+
+  function loadApiKey() {
+    try {
+      ANTHROPIC_API_KEY = window.localStorage.getItem('pilecco_anthropic_key') || null;
+    } catch (e) { ANTHROPIC_API_KEY = null; }
+    if (ANTHROPIC_API_KEY) setAiStatus('Chave de IA configurada neste aparelho. Os botões "✨" já estão liberados.');
+  }
+
+  if (btnAiKeySave) {
+    btnAiKeySave.addEventListener('click', function () {
+      var val = (aiKeyInput.value || '').trim();
+      if (!val) { setAiStatus('Cole uma chave válida antes de salvar.'); return; }
+      try { window.localStorage.setItem('pilecco_anthropic_key', val); } catch (e) { /* localStorage indisponível — segue só em memória */ }
+      ANTHROPIC_API_KEY = val;
+      aiKeyInput.value = '';
+      setAiStatus('Chave salva neste aparelho. Os botões "✨" já estão liberados.');
+    });
+  }
+
+  function callClaude(systemPrompt, userPrompt, maxTokens) {
+    if (!ANTHROPIC_API_KEY) return Promise.reject(new Error('Configure sua chave de IA no card no topo da página.'));
+    return fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        max_tokens: maxTokens || 400,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }]
+      })
+    }).then(function (res) {
+      if (!res.ok) return res.text().then(function (t) { throw new Error('Erro da API (' + res.status + '): ' + t.slice(0, 200)); });
+      return res.json();
+    }).then(function (data) {
+      return (data.content || []).map(function (b) { return b.text || ''; }).join('').trim();
+    });
+  }
+
+  function melhorarTextoIA(original) {
+    var sys = 'Você corrige e melhora textos curtos de relatórios de visita a supermercados para trade marketing da marca Pilecco Nobre (arroz). Corrija ortografia, acentuação, pontuação e concordância. Reescreva em linguagem profissional de trade marketing, natural e objetiva, sem exageros nem termos corporativos artificiais. NÃO invente fatos, números ou informações que não estejam no texto original. Responda APENAS com o texto corrigido, sem comentários, sem aspas.';
+    return callClaude(sys, original, 300);
+  }
+
+  function montarResumoLoja(store) {
+    var linhas = [];
+    linhas.push('Mercado: ' + (store.mercado || '-'));
+    linhas.push('Loja/unidade: ' + (store.loja || '-'));
+    linhas.push('Cidade: ' + (store.cidade || '-'));
+    if (store.observacoesGerais) linhas.push('Observações gerais: ' + store.observacoesGerais);
+    if (store.observacoes.length) {
+      linhas.push('Ações e observações:');
+      store.observacoes.forEach(function (o) { if (o.texto) linhas.push('- ' + (o.categoria ? '[' + o.categoria + '] ' : '') + o.texto); });
+    }
+    if (store.precos.length) {
+      linhas.push('Preços:');
+      store.precos.forEach(function (p) {
+        if (!p.produto) return;
+        var l = '- ' + p.produto + ': ' + (p.precoPilecco || '-');
+        if (p.promocao && p.precoPromocional) l += ' (promoção: ' + p.precoPromocional + ')';
+        if (p.concorrente) l += ' | Concorrente ' + p.concorrente + ': ' + (p.precoConcorrente || '-');
+        linhas.push(l);
+      });
+    }
+    if (store.estoque.length) {
+      linhas.push('Estoque/disponibilidade:');
+      store.estoque.forEach(function (e) { if (e.produto) linhas.push('- ' + e.produto + ': ' + (e.status || '-') + (e.observacao ? ' (' + e.observacao + ')' : '')); });
+    }
+    if (store.alertas.length) {
+      linhas.push('Alertas:');
+      store.alertas.forEach(function (a) { if (a.texto) linhas.push('- ' + (a.categoria ? '[' + a.categoria + '] ' : '') + a.texto); });
+    }
+    if (store.oportunidades.length) {
+      linhas.push('Oportunidades:');
+      store.oportunidades.forEach(function (o) {
+        if (!o.descricao) return;
+        var l = '- ' + (o.categoria ? '[' + o.categoria + '] ' : '') + o.descricao;
+        if (o.prioridade) l += ' (prioridade ' + o.prioridade + ')';
+        if (o.acaoSugerida) l += ' — ação sugerida: ' + o.acaoSugerida;
+        linhas.push(l);
+      });
+    }
+    return linhas.join('\n');
+  }
+
+  function gerarLeituraEstrategicaIA(store) {
+    var resumo = montarResumoLoja(store);
+    var sys = 'Você é um analista de trade marketing da marca Pilecco Nobre (arroz). Com base EXCLUSIVAMENTE nos dados fornecidos sobre uma visita a um ponto de venda, escreva uma "leitura estratégica" de 3 a 5 frases, no estilo de relatórios profissionais de campo: comece com uma avaliação geral da execução, cite evidências específicas dos dados, aponte o principal ponto de atenção ou oportunidade, e termine com uma prioridade recomendada. NUNCA invente preços, concorrentes, quantidades, vendas ou qualquer informação que não esteja explicitamente nos dados fornecidos. Se faltar informação, não presuma. Responda apenas com o texto da leitura estratégica, sem títulos, sem comentários.';
+    return callClaude(sys, resumo, 500);
+  }
+
+  function renderMelhorarTextoUI(container, getText, applyText) {
+    var btn = el('button', { class: 'btn-ai' }, []); btn.textContent = '✨ Melhorar texto';
+    btn.addEventListener('click', function () {
+      var original = (getText() || '').trim();
+      if (!original) { setAiStatus('Escreva algum texto antes de pedir para melhorar.'); return; }
+      btn.disabled = true; btn.textContent = 'Melhorando...';
+      melhorarTextoIA(original).then(function (sugestao) {
+        btn.disabled = false; btn.textContent = '✨ Melhorar texto';
+        var old = container.querySelector('.ai-suggestion-box');
+        if (old) old.remove();
+        var box = el('div', { class: 'ai-suggestion-box' });
+        box.appendChild(textEl('div', 'ai-label', 'Sugestão:'));
+        box.appendChild(textEl('div', 'ai-suggestion-text', sugestao));
+        var row = el('div', { class: 'ai-btn-row' });
+        var btnManter = el('button', { class: 'btn btn-add' }, []); btnManter.textContent = 'Manter original';
+        btnManter.addEventListener('click', function () { box.remove(); });
+        var btnUsar = el('button', { class: 'btn-ai' }, []); btnUsar.textContent = 'Usar sugestão';
+        btnUsar.addEventListener('click', function () { applyText(sugestao); box.remove(); });
+        row.appendChild(btnManter); row.appendChild(btnUsar);
+        box.appendChild(row);
+        container.appendChild(box);
+      }).catch(function (err) {
+        btn.disabled = false; btn.textContent = '✨ Melhorar texto';
+        setAiStatus(err.message);
+      });
+    });
+    return btn;
+  }
+
   // ---------- state ----------
   function uid() { return 'id' + Math.random().toString(36).slice(2, 10); }
 
@@ -395,24 +574,41 @@
     stores: []
   };
 
-  function newObservacao() { return { id: uid(), texto: '', fotos: [] }; }
-  function newAlerta() { return { id: uid(), texto: '', fotos: [] }; }
-  function newOportunidade() { return { id: uid(), texto: '' }; }
-  function newPreco() { return { id: uid(), produto: '', valor: '', oferta: false, valorOferta: '' }; }
+  var PRODUTOS_PORTFOLIO = ['Pilecco Nobre 5kg', 'Pilecco Nobre 2kg', 'Pilecco Nobre 1kg', 'Super Ecco 5kg', 'Arborio', 'Carnaroli', 'Hispamar'];
+  var MERCADOS_SUGERIDOS = ['Covabra', 'Mix Vali', 'GoodBom', 'Big Bom', 'Higa Atacado', 'Guarani Market', 'Supermercado Morete'];
+  var CATEGORIAS_ACAO = ['Ponto extra', 'Ilha', 'Expositor', 'Freezer', 'Geladeira', 'Gôndola', 'Wobbler', 'Porta-banner', 'Degustação', 'Material de merchandising', 'Posicionamento', 'Frentes', 'Organização', 'Visibilidade', 'Abastecimento', 'Outros'];
+  var STATUS_ESTOQUE = ['Disponível', 'Estoque baixo', 'Risco de ruptura', 'Ruptura', 'Não trabalha o produto', 'Não encontrado'];
+  var CATEGORIAS_ALERTA = ['Ruptura', 'Estoque baixo', 'Produto fora do mix', 'Preço inadequado', 'Produto mal posicionado', 'Falta de preço', 'Falta de abastecimento', 'Concorrente em promoção', 'Problema de exposição', 'Problema com material de merchandising', 'Outros'];
+  var PRIORIDADES = ['Alta', 'Média', 'Baixa'];
+
+  function newObservacao() { return { id: uid(), categoria: '', texto: '', fotos: [] }; }
+  function newAlerta() { return { id: uid(), categoria: '', texto: '', fotos: [] }; }
+  function newOportunidade() { return { id: uid(), descricao: '', categoria: '', prioridade: '', acaoSugerida: '', observacao: '', fotos: [] }; }
+  function newPreco() { return { id: uid(), produto: '', precoPilecco: '', promocao: false, precoPromocional: '', concorrente: '', precoConcorrente: '', observacao: '' }; }
+  function newEstoque() { return { id: uid(), produto: '', status: '', observacao: '' }; }
   function newStore() {
     return {
       id: uid(),
       aberta: true,
-      nome: '',
+      mercado: '',
+      loja: '',
+      cidade: '',
       contatoCargo: '',
       contatoNome: '',
       contatoTelefone: '',
+      observacoesGerais: '',
       observacoes: [newObservacao()],
       precos: [],
+      estoque: [],
       alertas: [],
       oportunidades: [],
       leituraEstrategica: ''
     };
+  }
+
+  function storeDisplayName(store) {
+    var partes = [store.mercado, store.loja].filter(function (x) { return x; });
+    return partes.join(' — ');
   }
 
   // ---------- library loading (resilient, multi-source) ----------
@@ -551,32 +747,117 @@
       meta: state.meta,
       stores: state.stores.map(function (s) {
         return {
-          nome: s.nome, contatoCargo: s.contatoCargo, contatoNome: s.contatoNome, contatoTelefone: s.contatoTelefone,
-          observacoes: s.observacoes.map(function (o) { return { texto: o.texto, fotoCount: o.fotos.length }; }),
+          mercado: s.mercado, loja: s.loja, cidade: s.cidade,
+          contatoCargo: s.contatoCargo, contatoNome: s.contatoNome, contatoTelefone: s.contatoTelefone,
+          observacoesGerais: s.observacoesGerais,
+          observacoes: s.observacoes.map(function (o) { return { categoria: o.categoria, texto: o.texto, fotoCount: o.fotos.length }; }),
           precos: s.precos,
-          alertas: s.alertas.map(function (a) { return { texto: a.texto, fotoCount: a.fotos.length }; }),
-          oportunidades: s.oportunidades,
+          estoque: s.estoque,
+          alertas: s.alertas.map(function (a) { return { categoria: a.categoria, texto: a.texto, fotoCount: a.fotos.length }; }),
+          oportunidades: s.oportunidades.map(function (o) { return { descricao: o.descricao, categoria: o.categoria, prioridade: o.prioridade, acaoSugerida: o.acaoSugerida, observacao: o.observacao, fotoCount: o.fotos.length }; }),
           leituraEstrategica: s.leituraEstrategica
         };
       })
     };
   }
 
+  // ---------- localStorage safety net (always-on, no login required) ----------
+  var LOCAL_DRAFT_KEY = 'relatorioVisitaRascunhoLocal';
+  var localSaveTimer = null;
+
+  function saveLocalDraft() {
+    try {
+      var snapshot = buildDraftSnapshot();
+      snapshot._savedAt = new Date().toISOString();
+      localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify(snapshot));
+    } catch (e) {
+      console.error('Não foi possível salvar rascunho local:', e);
+    }
+  }
+
+  function loadLocalDraft() {
+    try {
+      var raw = localStorage.getItem(LOCAL_DRAFT_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      console.error('Não foi possível ler rascunho local:', e);
+      return null;
+    }
+  }
+
+  function clearLocalDraft() {
+    try { localStorage.removeItem(LOCAL_DRAFT_KEY); } catch (e) { /* ignore */ }
+  }
+
+  function applyDraftToState(draft) {
+    state.meta = draft.meta || state.meta;
+    state.stores = (draft.stores || []).map(function (s) {
+      return {
+        id: uid(), aberta: false,
+        mercado: s.mercado || '', loja: s.loja || '', cidade: s.cidade || '',
+        contatoCargo: s.contatoCargo || '', contatoNome: s.contatoNome || '', contatoTelefone: s.contatoTelefone || '',
+        observacoesGerais: s.observacoesGerais || '',
+        observacoes: (s.observacoes || []).map(function (o) {
+          var obs = newObservacao(); obs.texto = o.texto || ''; obs.categoria = o.categoria || '';
+          if (o.fotoCount) obs.texto += (obs.texto ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+          return obs;
+        }),
+        precos: s.precos || [],
+        estoque: s.estoque || [],
+        alertas: (s.alertas || []).map(function (a) {
+          var al = newAlerta(); al.texto = a.texto || ''; al.categoria = a.categoria || '';
+          if (a.fotoCount) al.texto += (al.texto ? '\n' : '') + '[' + a.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+          return al;
+        }),
+        oportunidades: (s.oportunidades || []).map(function (o) {
+          var op = newOportunidade();
+          op.descricao = o.descricao || ''; op.categoria = o.categoria || ''; op.prioridade = o.prioridade || '';
+          op.acaoSugerida = o.acaoSugerida || ''; op.observacao = o.observacao || '';
+          if (o.fotoCount) op.observacao += (op.observacao ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+          return op;
+        }),
+        leituraEstrategica: s.leituraEstrategica || ''
+      };
+    });
+    if (state.stores.length) state.stores[state.stores.length - 1].aberta = true;
+    else state.stores.push(newStore());
+    renderMeta();
+    renderStores();
+  }
+
+  function estadoTemDadosReais() {
+    return state.stores.some(function (s) { return s.mercado || s.loja || s.observacoes.some(function (o) { return o.texto; }); });
+  }
+
+  function tryRestoreLocalDraftOnLoad() {
+    var draft = loadLocalDraft();
+    if (!draft) return;
+    if (estadoTemDadosReais()) return;
+    var quando = draft._savedAt ? new Date(draft._savedAt).toLocaleString('pt-BR') : 'antes';
+    if (confirm('Encontrei um rascunho salvo neste aparelho (' + quando + '). Deseja continuar de onde parou?')) {
+      applyDraftToState(draft);
+    } else {
+      clearLocalDraft();
+    }
+  }
+
   function scheduleAutosave() {
+    clearTimeout(localSaveTimer);
+    localSaveTimer = setTimeout(saveLocalDraft, 800);
     if (!driveAccessToken) return;
     clearTimeout(autosaveTimer);
-    setDriveStatus('Alterações pendentes...');
+    setDriveStatus('🟡 Alterações pendentes...');
     autosaveTimer = setTimeout(function () {
-      setDriveStatus('Salvando rascunho...');
+      setDriveStatus('🟡 Salvando rascunho no Drive...');
       var name = draftFileName();
       findFileByName(name).then(function (existing) {
         return saveJSONFile(name, buildDraftSnapshot(), existing ? existing.id : null);
       }).then(function () {
         var now = new Date();
-        setDriveStatus('Rascunho salvo às ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + '.');
+        setDriveStatus('🟢 Rascunho salvo no Drive às ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + '.');
       }).catch(function (err) {
         console.error(err);
-        setDriveStatus('Não consegui salvar o rascunho agora. Vai tentar de novo na próxima alteração.');
+        setDriveStatus('🔴 Não consegui salvar no Drive agora (rascunho local continua seguro). Vai tentar de novo na próxima alteração.');
       });
     }, 3000);
   }
@@ -585,82 +866,126 @@
     var name = draftFileName();
     findFileByName(name).then(function (existing) {
       if (!existing) return;
-      var temEntradaReal = state.stores.some(function (s) { return s.nome || s.observacoes.some(function (o) { return o.texto; }); });
-      if (temEntradaReal) return;
+      if (estadoTemDadosReais()) return;
       return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id + '?alt=media')
         .then(function (res) { return res.json(); })
         .then(function (draft) {
-          if (!confirm('Encontrei um rascunho salvo de hoje (' + state.meta.data + '). Deseja continuar de onde parou?')) return;
-          state.meta = draft.meta || state.meta;
-          state.stores = (draft.stores || []).map(function (s) {
-            return {
-              id: uid(), aberta: false,
-              nome: s.nome || '', contatoCargo: s.contatoCargo || '', contatoNome: s.contatoNome || '', contatoTelefone: s.contatoTelefone || '',
-              observacoes: (s.observacoes || []).map(function (o) {
-                var obs = newObservacao(); obs.texto = o.texto || '';
-                if (o.fotoCount) obs.texto += (obs.texto ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]';
-                return obs;
-              }),
-              precos: s.precos || [],
-              alertas: (s.alertas || []).map(function (a) {
-                var al = newAlerta(); al.texto = a.texto || '';
-                if (a.fotoCount) al.texto += (al.texto ? '\n' : '') + '[' + a.fotoCount + ' foto(s) do rascunho — anexe novamente]';
-                return al;
-              }),
-              oportunidades: s.oportunidades || [],
-              leituraEstrategica: s.leituraEstrategica || ''
-            };
-          });
-          if (state.stores.length) state.stores[state.stores.length - 1].aberta = true;
-          else state.stores.push(newStore());
-          renderMeta();
-          renderStores();
+          if (!confirm('Encontrei um rascunho salvo de hoje no Drive (' + state.meta.data + '). Deseja continuar de onde parou?')) return;
+          applyDraftToState(draft);
         });
     }).catch(function (err) { console.error(err); });
   }
 
-  function getOrCreateReportsFolder() {
-    if (reportsFolderIdCache) return Promise.resolve(reportsFolderIdCache);
-    var q = encodeURIComponent("name = '" + REPORTS_FOLDER_NAME + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false");
-    return driveFetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&spaces=drive&fields=files(id,name)')
+  function getOrCreateFolder(name, parentId) {
+    var q = "name = '" + name.replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false" +
+      (parentId ? " and '" + parentId + "' in parents" : "");
+    return driveFetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&spaces=drive&fields=files(id,name)')
       .then(function (res) { return res.json(); })
       .then(function (data) {
-        if (data.files && data.files[0]) { reportsFolderIdCache = data.files[0].id; return reportsFolderIdCache; }
+        if (data.files && data.files[0]) return data.files[0].id;
+        var metadata = { name: name, mimeType: 'application/vnd.google-apps.folder' };
+        if (parentId) metadata.parents = [parentId];
         return driveFetch('https://www.googleapis.com/drive/v3/files', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: REPORTS_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' })
-        }).then(function (res) { return res.json(); }).then(function (folder) {
-          reportsFolderIdCache = folder.id;
-          return reportsFolderIdCache;
-        });
+          body: JSON.stringify(metadata)
+        }).then(function (res) { return res.json(); }).then(function (folder) { return folder.id; });
       });
   }
 
-  function uploadDocxToDrive(blob, filename) {
-    if (!driveAccessToken) return Promise.resolve(false);
-    return getOrCreateReportsFolder().then(function (folderId) {
-      return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json; charset=UTF-8' },
-        body: JSON.stringify({ name: filename, parents: [folderId] })
+  function getOrCreateFolderPath(pathParts) {
+    var cumulative = '';
+    return pathParts.reduce(function (chain, name) {
+      cumulative = cumulative ? cumulative + '/' + name : name;
+      var key = cumulative;
+      return chain.then(function (parentId) {
+        if (folderPromiseCache[key]) return folderPromiseCache[key];
+        var p = getOrCreateFolder(name, parentId);
+        folderPromiseCache[key] = p;
+        p.catch(function () { delete folderPromiseCache[key]; });
+        return p;
       });
+    }, Promise.resolve(null));
+  }
+
+  var MESES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+  var folderPromiseCache = {};
+
+  function getOrCreateReportsFolder() {
+    var dataParts = (state.meta.data || todayISO()).split('-');
+    var ano = dataParts[0];
+    var mes = MESES_PT[parseInt(dataParts[1], 10) - 1] || dataParts[1];
+    return getOrCreateFolderPath([REPORTS_FOLDER_NAME, ano, mes]);
+  }
+
+  var photoUploadCounter = {};
+  var pendingPhotoUploads = 0;
+
+  function getOrCreateStoreFolder(store) {
+    var dataParts = (state.meta.data || todayISO()).split('-');
+    var ano = dataParts[0];
+    var mes = MESES_PT[parseInt(dataParts[1], 10) - 1] || dataParts[1];
+    var mercadoLoja = [store.mercado, store.loja].filter(function (x) { return x; }).join(' ') || 'Sem mercado';
+    var dataBR = formatDataBR(state.meta.data) || state.meta.data || todayISO();
+    return getOrCreateFolderPath([REPORTS_FOLDER_NAME, ano, mes, mercadoLoja, dataBR]);
+  }
+
+  function driveResumableUpload(metadata, arrayBuffer, mimeType) {
+    return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify(metadata)
     }).then(function (initRes) {
       var uploadUrl = initRes.headers.get('Location');
       return fetch(uploadUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
-        body: blob
+        headers: { 'Content-Type': mimeType },
+        body: arrayBuffer
       });
-    }).then(function (res) { return res.ok; })
-      .then(function (ok) {
-        if (ok) {
-          return findFileByName(draftFileName()).then(function (existing) {
-            if (existing) return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id, { method: 'DELETE' });
-          }).then(function () { return true; });
-        }
-        return false;
-      }).catch(function (err) { console.error(err); return false; });
+    }).then(function (res) { return res.ok; });
+  }
+
+  function uploadPhotoToDrive(store, foto) {
+    if (!driveAccessToken || !store) return Promise.resolve(false);
+    pendingPhotoUploads++;
+    setDriveStatus('🟡 Enviando ' + pendingPhotoUploads + ' foto(s) para o Drive...');
+    return getOrCreateStoreFolder(store).then(function (folderId) {
+      var mercadoSlug = slug(store.mercado || 'loja');
+      var lojaSlug = slug(store.loja || '');
+      var dataSlug = slug(formatDataBR(state.meta.data) || state.meta.data || todayISO());
+      var key = mercadoSlug + '_' + lojaSlug + '_' + dataSlug;
+      photoUploadCounter[key] = (photoUploadCounter[key] || 0) + 1;
+      var seq = String(photoUploadCounter[key]).padStart(2, '0');
+      var filename = mercadoSlug + (lojaSlug ? '_' + lojaSlug : '') + '_' + dataSlug + '_' + seq + '.jpg';
+      return driveResumableUpload({ name: filename, parents: [folderId] }, foto.arrayBuffer, 'image/jpeg');
+    }).then(function (ok) {
+      pendingPhotoUploads = Math.max(0, pendingPhotoUploads - 1);
+      foto.driveUploaded = ok;
+      if (pendingPhotoUploads === 0) setDriveStatus(ok ? '🟢 Fotos sincronizadas com o Drive.' : '🔴 Falha ao enviar uma foto. Ela continua no relatório final normalmente.');
+      return ok;
+    }).catch(function (err) {
+      pendingPhotoUploads = Math.max(0, pendingPhotoUploads - 1);
+      console.error(err);
+      setDriveStatus('🔴 Falha ao enviar uma foto para o Drive (rede instável?). Ela continua no relatório final normalmente.');
+      return false;
+    });
+  }
+
+  function uploadDocxToDrive(blob, filename, folderIdOverride) {
+    if (!driveAccessToken) return Promise.resolve(false);
+    var folderPromise = folderIdOverride ? Promise.resolve(folderIdOverride) : getOrCreateReportsFolder();
+    return folderPromise.then(function (folderId) {
+      return driveResumableUpload({ name: filename, parents: [folderId] }, blob,
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    }).then(function (ok) {
+      if (ok) {
+        return findFileByName(draftFileName()).then(function (existing) {
+          if (existing) return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id, { method: 'DELETE' });
+        }).then(function () { return true; });
+      }
+      return false;
+    }).catch(function (err) { console.error(err); return false; });
   }
 
   // ---------- image compression ----------
@@ -728,6 +1053,62 @@
     if (type && type !== 'textarea') input.setAttribute('type', type);
     input.value = value || '';
     input.addEventListener('input', function () { oninput(input.value); scheduleAutosave(); });
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function labeledInputList(labelText, value, oninput, placeholder, options) {
+    var wrap = el('div', { class: 'field' });
+    wrap.appendChild(textEl('label', null, labelText));
+    var listId = 'dl_' + uid();
+    var input = el('input', { placeholder: placeholder || '', list: listId });
+    input.value = value || '';
+    input.addEventListener('input', function () { oninput(input.value); scheduleAutosave(); });
+    var datalist = el('datalist', { id: listId });
+    (options || []).forEach(function (opt) { datalist.appendChild(el('option', { value: opt })); });
+    wrap.appendChild(input);
+    wrap.appendChild(datalist);
+    return wrap;
+  }
+
+  function labeledSelect(labelText, value, oninput, options, placeholderOption) {
+    var wrap = el('div', { class: 'field' });
+    wrap.appendChild(textEl('label', null, labelText));
+    var select = el('select', {});
+    var optBlank = el('option', { value: '' }); optBlank.textContent = placeholderOption || 'Selecione...';
+    select.appendChild(optBlank);
+    options.forEach(function (opt) {
+      var o = el('option', { value: opt }); o.textContent = opt;
+      if (opt === value) o.setAttribute('selected', 'selected');
+      select.appendChild(o);
+    });
+    select.addEventListener('change', function () { oninput(select.value); scheduleAutosave(); });
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  function formatCurrencyFromDigits(str) {
+    var digits = (str || '').replace(/\D/g, '');
+    if (!digits) return '';
+    var cents = parseInt(digits, 10);
+    var reais = Math.floor(cents / 100);
+    var centavos = cents % 100;
+    var reaisStr = String(reais).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    return 'R$ ' + reaisStr + ',' + String(centavos).padStart(2, '0');
+  }
+
+  function currencyInput(labelText, value, oninput, placeholder) {
+    var wrap = el('div', { class: 'field' });
+    wrap.appendChild(textEl('label', null, labelText));
+    var input = el('input', { placeholder: placeholder || 'R$ 0,00', inputmode: 'decimal' });
+    input.value = value || '';
+    input.addEventListener('blur', function () {
+      var formatted = formatCurrencyFromDigits(input.value);
+      input.value = formatted;
+      oninput(formatted);
+      scheduleAutosave();
+    });
+    input.addEventListener('input', function () { oninput(input.value); });
     wrap.appendChild(input);
     return wrap;
   }
@@ -800,7 +1181,7 @@
     var head = el('div', { class: 'store-head' });
     var num = el('div', { class: 'num' }, []); num.textContent = String(storeIdx + 1);
     var title = el('div', { class: 'title' }, []);
-    title.textContent = store.nome ? store.nome : ('Loja ' + (storeIdx + 1) + ' (sem nome)');
+    title.textContent = storeDisplayName(store) || ('Loja ' + (storeIdx + 1) + ' (sem nome)');
     var chev = el('div', { class: 'chev' }, []); chev.textContent = store.aberta ? '▲' : '▼';
     var rmStore = el('button', { class: 'icon-btn', title: 'Remover loja' }, []); rmStore.textContent = '🗑';
     rmStore.addEventListener('click', function (e) {
@@ -818,10 +1199,16 @@
 
     var body = el('div', { class: 'store-body' });
 
-    // nome + contato
-    body.appendChild(labeledInput('Nome do supermercado', store.nome, function (v) {
-      store.nome = v; title.textContent = v ? v : ('Loja ' + (storeIdx + 1) + ' (sem nome)');
-    }, 'Ex: Supermercado Good Bom Jd. Bom Retiro'));
+    // mercado / loja / cidade
+    var rowLoja = el('div', { class: 'row3' });
+    rowLoja.appendChild(labeledInputList('Mercado', store.mercado, function (v) {
+      store.mercado = v; title.textContent = storeDisplayName(store) || ('Loja ' + (storeIdx + 1) + ' (sem nome)');
+    }, 'Ex: Covabra', MERCADOS_SUGERIDOS));
+    rowLoja.appendChild(labeledInput('Loja / unidade', store.loja, function (v) {
+      store.loja = v; title.textContent = storeDisplayName(store) || ('Loja ' + (storeIdx + 1) + ' (sem nome)');
+    }, 'Ex: Indaiatuba'));
+    rowLoja.appendChild(labeledInput('Cidade', store.cidade, function (v) { store.cidade = v; }, 'Ex: Indaiatuba'));
+    body.appendChild(rowLoja);
 
     var row3 = el('div', { class: 'row3' });
     row3.appendChild(labeledInput('Cargo do contato', store.contatoCargo, function (v) { store.contatoCargo = v; }, 'Ex: Gerente'));
@@ -829,13 +1216,17 @@
     row3.appendChild(labeledInput('Telefone', store.contatoTelefone, function (v) { store.contatoTelefone = v; }, '(19) 99999-9999'));
     body.appendChild(row3);
 
+    body.appendChild(labeledInput('Observações gerais', store.observacoesGerais, function (v) { store.observacoesGerais = v; }, 'Notas gerais sobre a visita a esta loja...', 'textarea'));
+
     // Ações e observações
     body.appendChild(renderListSection({
       title: 'Ações e observações',
       guiaKey: 'observacoes',
       items: store.observacoes,
+      store: store,
       placeholder: 'Ex: O Arborio está bem abastecido e com bom posicionamento...',
       withPhotos: true,
+      categorias: CATEGORIAS_ACAO,
       onAdd: function () { store.observacoes.push(newObservacao()); renderStores(); },
       onRemove: function (i) { store.observacoes.splice(i, 1); renderStores(); }
     }));
@@ -843,27 +1234,24 @@
     // Preços
     body.appendChild(renderPrecosSection(store));
 
+    // Estoque e disponibilidade
+    body.appendChild(renderEstoqueSection(store));
+
     // Alertas
     body.appendChild(renderListSection({
       title: 'Alertas',
       guiaKey: 'alertas',
       items: store.alertas,
+      store: store,
       placeholder: 'Ex: Sortimento reduzido limita oportunidades de crescimento...',
       withPhotos: true,
+      categorias: CATEGORIAS_ALERTA,
       onAdd: function () { store.alertas.push(newAlerta()); renderStores(); },
       onRemove: function (i) { store.alertas.splice(i, 1); renderStores(); }
     }));
 
     // Oportunidades
-    body.appendChild(renderListSection({
-      title: 'Oportunidades',
-      guiaKey: 'oportunidades',
-      items: store.oportunidades,
-      placeholder: 'Ex: Avaliar ampliação do sortimento na rede...',
-      withPhotos: false,
-      onAdd: function () { store.oportunidades.push(newOportunidade()); renderStores(); },
-      onRemove: function (i) { store.oportunidades.splice(i, 1); renderStores(); }
-    }));
+    body.appendChild(renderOportunidadesSection(store));
 
     // Leitura estratégica
     var lea = el('div', { class: 'subsection' });
@@ -875,6 +1263,20 @@
     leaField.style.minHeight = '90px';
     leaField.addEventListener('input', function () { store.leituraEstrategica = leaField.value; scheduleAutosave(); });
     lea.appendChild(leaField);
+    var btnGerarLeitura = el('button', { class: 'btn-ai' }, []);
+    btnGerarLeitura.textContent = store.leituraEstrategica ? '🔄 Regenerar com IA' : '✨ Gerar Leitura Estratégica com IA';
+    btnGerarLeitura.addEventListener('click', function () {
+      btnGerarLeitura.disabled = true; btnGerarLeitura.textContent = 'Analisando dados da loja...';
+      gerarLeituraEstrategicaIA(store).then(function (texto) {
+        store.leituraEstrategica = texto; leaField.value = texto; scheduleAutosave();
+        btnGerarLeitura.disabled = false; btnGerarLeitura.textContent = '🔄 Regenerar com IA';
+      }).catch(function (err) {
+        btnGerarLeitura.disabled = false;
+        btnGerarLeitura.textContent = store.leituraEstrategica ? '🔄 Regenerar com IA' : '✨ Gerar Leitura Estratégica com IA';
+        setAiStatus(err.message);
+      });
+    });
+    lea.appendChild(btnGerarLeitura);
     body.appendChild(lea);
 
     wrap.appendChild(body);
@@ -890,6 +1292,20 @@
 
     opts.items.forEach(function (item, idx) {
       var entry = el('div', { class: 'entry' });
+
+      if (opts.categorias) {
+        var catSelect = el('select', { style: 'margin-bottom:8px;' });
+        var optBlank = el('option', { value: '' }); optBlank.textContent = 'Categoria (opcional)...';
+        catSelect.appendChild(optBlank);
+        opts.categorias.forEach(function (cat) {
+          var o = el('option', { value: cat }); o.textContent = cat;
+          if (cat === item.categoria) o.setAttribute('selected', 'selected');
+          catSelect.appendChild(o);
+        });
+        catSelect.addEventListener('change', function () { item.categoria = catSelect.value; scheduleAutosave(); });
+        entry.appendChild(catSelect);
+      }
+
       var top = el('div', { class: 'entry-top' });
       var ta = el('textarea', { placeholder: opts.placeholder });
       ta.value = item.texto || '';
@@ -898,6 +1314,9 @@
       rm.addEventListener('click', function () { opts.onRemove(idx); });
       top.appendChild(ta); top.appendChild(rm);
       entry.appendChild(top);
+      entry.appendChild(renderMelhorarTextoUI(entry, function () { return ta.value; }, function (novo) {
+        item.texto = novo; ta.value = novo; scheduleAutosave();
+      }));
 
       if (opts.withPhotos) {
         if (item.fotos.length) {
@@ -909,6 +1328,7 @@
         entry.appendChild(renderPhotoAdder(function (fotos) {
           item.fotos = item.fotos.concat(fotos);
           renderStores();
+          fotos.forEach(function (f) { uploadPhotoToDrive(opts.store, f); });
         }));
       }
       section.appendChild(entry);
@@ -930,36 +1350,38 @@
 
     store.precos.forEach(function (preco, idx) {
       var entry = el('div', { class: 'entry' });
-      var top = el('div', { class: 'entry-top' });
-      var prodInput = el('input', { placeholder: 'Produto (ex: Pilecco Nobre 1kg)' });
-      prodInput.value = preco.produto || '';
-      prodInput.addEventListener('input', function () { preco.produto = prodInput.value; scheduleAutosave(); });
-      var valorInput = el('input', { placeholder: 'Valor (ex: R$ 5,99 ou Ruptura)' });
-      valorInput.value = preco.valor || '';
-      valorInput.addEventListener('input', function () { preco.valor = valorInput.value; scheduleAutosave(); });
+
+      var topRow = el('div', { class: 'entry-top' });
+      var prodWrap = labeledInputList('Produto', preco.produto, function (v) { preco.produto = v; }, 'Ex: Pilecco Nobre 1kg', PRODUTOS_PORTFOLIO);
+      prodWrap.style.flex = '1';
       var rm = el('button', { class: 'btn-remove-entry' }, []); rm.textContent = '✕';
       rm.addEventListener('click', function () { store.precos.splice(idx, 1); renderStores(); });
-      top.appendChild(prodInput);
-      top.appendChild(valorInput);
-      top.appendChild(rm);
-      entry.appendChild(top);
+      topRow.appendChild(prodWrap);
+      topRow.appendChild(rm);
+      entry.appendChild(topRow);
 
-      var ofertaRow = el('label', { style: 'display:flex; align-items:center; gap:6px; margin-top:8px; font-size:13px; color:var(--ink-soft); cursor:pointer;' });
-      var ofertaCheck = el('input', { type: 'checkbox' });
-      ofertaCheck.style.width = 'auto';
-      ofertaCheck.checked = !!preco.oferta;
-      ofertaCheck.addEventListener('change', function () { preco.oferta = ofertaCheck.checked; renderStores(); });
-      ofertaRow.appendChild(ofertaCheck);
-      ofertaRow.appendChild(document.createTextNode('Oferta'));
-      entry.appendChild(ofertaRow);
+      entry.appendChild(currencyInput('Preço Pilecco Nobre', preco.precoPilecco, function (v) { preco.precoPilecco = v; }));
 
-      if (preco.oferta) {
-        var ofertaValorInput = el('input', { placeholder: 'Valor da oferta (ex: R$ 4,99)' });
-        ofertaValorInput.style.marginTop = '8px';
-        ofertaValorInput.value = preco.valorOferta || '';
-        ofertaValorInput.addEventListener('input', function () { preco.valorOferta = ofertaValorInput.value; scheduleAutosave(); });
-        entry.appendChild(ofertaValorInput);
+      var promoRow = el('label', { style: 'display:flex; align-items:center; gap:6px; margin:4px 0 8px; font-size:13px; color:var(--ink-soft); cursor:pointer;' });
+      var promoCheck = el('input', { type: 'checkbox' });
+      promoCheck.style.width = 'auto';
+      promoCheck.checked = !!preco.promocao;
+      promoCheck.addEventListener('change', function () { preco.promocao = promoCheck.checked; renderStores(); });
+      promoRow.appendChild(promoCheck);
+      promoRow.appendChild(document.createTextNode('Em promoção'));
+      entry.appendChild(promoRow);
+
+      if (preco.promocao) {
+        entry.appendChild(currencyInput('Preço promocional', preco.precoPromocional, function (v) { preco.precoPromocional = v; }));
       }
+
+      var rowConc = el('div', { class: 'row2' });
+      rowConc.appendChild(labeledInput('Concorrente', preco.concorrente, function (v) { preco.concorrente = v; }, 'Ex: Camil'));
+      var precoConcWrap = currencyInput('Preço do concorrente', preco.precoConcorrente, function (v) { preco.precoConcorrente = v; });
+      rowConc.appendChild(precoConcWrap);
+      entry.appendChild(rowConc);
+
+      entry.appendChild(labeledInput('Observação', preco.observacao, function (v) { preco.observacao = v; }, 'Ex: sem etiqueta de preço'));
 
       section.appendChild(entry);
     });
@@ -970,6 +1392,89 @@
     section.appendChild(addBtn);
     return section;
   }
+
+  function renderEstoqueSection(store) {
+    var section = el('div', { class: 'subsection' });
+    var subhead = el('div', { class: 'subhead' }); subhead.textContent = 'Estoque e disponibilidade';
+    section.appendChild(subhead);
+
+    store.estoque.forEach(function (item, idx) {
+      var entry = el('div', { class: 'entry' });
+
+      var topRow = el('div', { class: 'entry-top' });
+      var prodWrap = labeledInputList('Produto', item.produto, function (v) { item.produto = v; }, 'Ex: Carnaroli', PRODUTOS_PORTFOLIO);
+      prodWrap.style.flex = '1';
+      var rm = el('button', { class: 'btn-remove-entry' }, []); rm.textContent = '✕';
+      rm.addEventListener('click', function () { store.estoque.splice(idx, 1); renderStores(); });
+      topRow.appendChild(prodWrap);
+      topRow.appendChild(rm);
+      entry.appendChild(topRow);
+
+      entry.appendChild(labeledSelect('Situação', item.status, function (v) { item.status = v; }, STATUS_ESTOQUE, 'Selecione a situação...'));
+      entry.appendChild(labeledInput('Observação', item.observacao, function (v) { item.observacao = v; }, 'Detalhe complementar (opcional)'));
+
+      section.appendChild(entry);
+    });
+
+    var addBtn = el('button', { class: 'btn btn-add' }, []);
+    addBtn.textContent = '+ Adicionar produto';
+    addBtn.addEventListener('click', function () { store.estoque.push(newEstoque()); renderStores(); });
+    section.appendChild(addBtn);
+    return section;
+  }
+
+  function renderOportunidadesSection(store) {
+    var section = el('div', { class: 'subsection' });
+    var subhead = el('div', { class: 'subhead' }); subhead.textContent = 'Oportunidades';
+    section.appendChild(subhead);
+    var tips = renderTipsBox('oportunidades');
+    if (tips) section.appendChild(tips);
+
+    store.oportunidades.forEach(function (op, idx) {
+      var entry = el('div', { class: 'entry' });
+
+      var topRow = el('div', { class: 'entry-top' });
+      var descTa = el('textarea', { placeholder: 'Descrição da oportunidade...' });
+      descTa.value = op.descricao || '';
+      descTa.addEventListener('input', function () { op.descricao = descTa.value; scheduleAutosave(); });
+      var rm = el('button', { class: 'btn-remove-entry' }, []); rm.textContent = '✕';
+      rm.addEventListener('click', function () { store.oportunidades.splice(idx, 1); renderStores(); });
+      topRow.appendChild(descTa); topRow.appendChild(rm);
+      entry.appendChild(topRow);
+      entry.appendChild(renderMelhorarTextoUI(entry, function () { return descTa.value; }, function (novo) {
+        op.descricao = novo; descTa.value = novo; scheduleAutosave();
+      }));
+
+      var row2 = el('div', { class: 'row2' });
+      row2.appendChild(labeledInput('Categoria', op.categoria, function (v) { op.categoria = v; }, 'Ex: Espaço/exposição'));
+      row2.appendChild(labeledSelect('Prioridade', op.prioridade, function (v) { op.prioridade = v; }, PRIORIDADES, 'Selecione...'));
+      entry.appendChild(row2);
+
+      entry.appendChild(labeledInput('Ação sugerida', op.acaoSugerida, function (v) { op.acaoSugerida = v; }, 'Ex: Negociar ponto extra'));
+      entry.appendChild(labeledInput('Observação', op.observacao, function (v) { op.observacao = v; }, 'Detalhe complementar (opcional)'));
+
+      if (op.fotos.length) {
+        entry.appendChild(renderPhotosRow(op.fotos, function (photoIdx) {
+          op.fotos.splice(photoIdx, 1);
+          renderStores();
+        }));
+      }
+      entry.appendChild(renderPhotoAdder(function (fotos) {
+        op.fotos = op.fotos.concat(fotos);
+        renderStores();
+        fotos.forEach(function (f) { uploadPhotoToDrive(store, f); });
+      }));
+
+      section.appendChild(entry);
+    });
+
+    var addBtn = el('button', { class: 'btn btn-add' }, []);
+    addBtn.textContent = '+ Adicionar oportunidade';
+    addBtn.addEventListener('click', function () { store.oportunidades.push(newOportunidade()); renderStores(); });
+    section.appendChild(addBtn);
+    return section;
+  }
+
 
   document.getElementById('btn-add-store').addEventListener('click', function () {
     state.stores.forEach(function (s) { s.aberta = false; });
@@ -1029,6 +1534,7 @@
           new D.TextRun({ text: label + ': ', bold: true, size: 24, font: 'Arial' }),
           new D.TextRun({ text: value || '-', size: 24, font: 'Arial' })
         ],
+        alignment: D.AlignmentType.LEFT,
         spacing: { after: 40 }
       });
     }
@@ -1047,11 +1553,14 @@
         if (store.contatoTelefone) c += ' (' + store.contatoTelefone + ')';
         contatoParts.push(c);
       }
-      var headingText = (idx + 1) + '. ' + (store.nome || 'SEM NOME').toUpperCase() +
+      var nomeLoja = [store.mercado, store.loja].filter(function (x) { return x; }).join(' — ') || 'SEM NOME';
+      var headingText = (idx + 1) + '. ' + nomeLoja.toUpperCase() +
+        (store.cidade ? '  (' + store.cidade + ')' : '') +
         (contatoParts.length ? '  ' + contatoParts.join(' ') : '');
 
       children.push(new D.Paragraph({
         children: [new D.TextRun({ text: headingText, bold: true, size: 26, color: '0A3679', font: 'Arial' })],
+        alignment: D.AlignmentType.LEFT,
         spacing: { before: 240, after: 120 },
         border: { bottom: { color: 'E3E9F4', space: 4, style: D.BorderStyle.SINGLE, size: 8 } }
       }));
@@ -1059,15 +1568,27 @@
       function subhead(text) {
         children.push(new D.Paragraph({
           children: [new D.TextRun({ text: text, bold: true, size: 26, font: 'Arial' })],
+          alignment: D.AlignmentType.LEFT,
           spacing: { before: 160, after: 80 }
         }));
+      }
+      function bodyPara(text, opts) {
+        opts = opts || {};
+        opts.children = [new D.TextRun({ text: text, size: 24, font: 'Arial' })];
+        opts.alignment = D.AlignmentType.LEFT;
+        return new D.Paragraph(opts);
+      }
+
+      if (store.observacoesGerais && store.observacoesGerais.trim()) {
+        children.push(bodyPara(store.observacoesGerais, { spacing: { after: 120 } }));
       }
 
       if (store.observacoes.some(function (o) { return o.texto || o.fotos.length; })) {
         subhead('Ações e observações');
         store.observacoes.forEach(function (o) {
           if (!o.texto && !o.fotos.length) return;
-          if (o.texto) children.push(new D.Paragraph({ children: [new D.TextRun({ text: o.texto, size: 24, font: 'Arial' })], spacing: { after: 80 } }));
+          var texto = (o.categoria ? o.categoria + ': ' : '') + o.texto;
+          if (texto) children.push(bodyPara(texto, { spacing: { after: 80 } }));
           var photoPara = buildPhotosParagraph(D, o.fotos);
           if (photoPara) children.push(photoPara);
         });
@@ -1076,17 +1597,26 @@
       if (store.precos.length) {
         subhead('Preços');
         store.precos.forEach(function (p) {
-          if (!p.produto && !p.valor) return;
+          if (!p.produto && !p.precoPilecco) return;
           var runs = [new D.TextRun({ text: (p.produto || '') + ': ', bold: true, size: 24, font: 'Arial' })];
-          if (p.oferta && p.valorOferta) {
-            runs.push(new D.TextRun({ text: 'De ' + (p.valor || '') + ' por ', size: 24, font: 'Arial' }));
-            runs.push(new D.TextRun({ text: p.valorOferta, bold: true, size: 24, font: 'Arial' }));
-            runs.push(new D.TextRun({ text: '  OFERTA', bold: true, color: 'D9A600', size: 24, font: 'Arial' }));
-          } else {
-            runs.push(new D.TextRun({ text: p.valor || '', size: 24, font: 'Arial' }));
-            if (p.oferta) runs.push(new D.TextRun({ text: '  OFERTA', bold: true, color: 'D9A600', size: 24, font: 'Arial' }));
+          runs.push(new D.TextRun({ text: p.precoPilecco || '-', size: 24, font: 'Arial' }));
+          if (p.promocao && p.precoPromocional) {
+            runs.push(new D.TextRun({ text: '  (promoção: ' + p.precoPromocional + ')', bold: true, color: 'D9A600', size: 24, font: 'Arial' }));
           }
-          children.push(new D.Paragraph({ children: runs, spacing: { after: 40 } }));
+          if (p.concorrente || p.precoConcorrente) {
+            runs.push(new D.TextRun({ text: '   |   Concorrente' + (p.concorrente ? ' (' + p.concorrente + ')' : '') + ': ' + (p.precoConcorrente || '-'), size: 24, font: 'Arial' }));
+          }
+          if (p.observacao) runs.push(new D.TextRun({ text: '   — ' + p.observacao, size: 24, font: 'Arial', italics: true }));
+          children.push(new D.Paragraph({ children: runs, alignment: D.AlignmentType.LEFT, spacing: { after: 40 } }));
+        });
+      }
+
+      if (store.estoque.some(function (e) { return e.produto || e.status; })) {
+        subhead('Estoque e disponibilidade');
+        store.estoque.forEach(function (e) {
+          if (!e.produto && !e.status) return;
+          var texto = (e.produto || '-') + ': ' + (e.status || '-') + (e.observacao ? ' — ' + e.observacao : '');
+          children.push(bodyPara(texto, { spacing: { after: 40 } }));
         });
       }
 
@@ -1094,24 +1624,32 @@
         subhead('Alertas');
         store.alertas.forEach(function (a) {
           if (!a.texto && !a.fotos.length) return;
-          if (a.texto) children.push(new D.Paragraph({ children: [new D.TextRun({ text: a.texto, size: 24, font: 'Arial' })], numbering: { reference: 'bullet-list', level: 0 }, spacing: { after: 80 } }));
+          var texto = (a.categoria ? a.categoria + ': ' : '') + a.texto;
+          if (texto) children.push(bodyPara(texto, { numbering: { reference: 'bullet-list', level: 0 }, spacing: { after: 80 } }));
           var photoPara = buildPhotosParagraph(D, a.fotos);
           if (photoPara) children.push(photoPara);
         });
       }
 
-      if (store.oportunidades.some(function (o) { return o.texto; })) {
+      if (store.oportunidades.some(function (o) { return o.descricao || o.fotos.length; })) {
         subhead('Oportunidades');
         store.oportunidades.forEach(function (o) {
-          if (!o.texto) return;
-          children.push(new D.Paragraph({ children: [new D.TextRun({ text: o.texto, size: 24, font: 'Arial' })], numbering: { reference: 'bullet-list', level: 0 }, spacing: { after: 80 } }));
+          if (!o.descricao && !o.fotos.length) return;
+          var linha1 = o.descricao || '';
+          if (o.categoria) linha1 = '[' + o.categoria + '] ' + linha1;
+          if (o.prioridade) linha1 += '  (Prioridade: ' + o.prioridade + ')';
+          if (linha1) children.push(bodyPara(linha1, { numbering: { reference: 'bullet-list', level: 0 }, spacing: { after: 40 } }));
+          if (o.acaoSugerida) children.push(bodyPara('Ação sugerida: ' + o.acaoSugerida, { spacing: { after: 40 } }));
+          if (o.observacao) children.push(bodyPara(o.observacao, { spacing: { after: 80 } }));
+          var photoPara = buildPhotosParagraph(D, o.fotos);
+          if (photoPara) children.push(photoPara);
         });
       }
 
       if (store.leituraEstrategica && store.leituraEstrategica.trim()) {
         subhead('Leitura estratégica');
         store.leituraEstrategica.split('\n').forEach(function (line) {
-          if (line.trim()) children.push(new D.Paragraph({ children: [new D.TextRun({ text: line, size: 24, font: 'Arial' })], spacing: { after: 80 } }));
+          if (line.trim()) children.push(bodyPara(line, { spacing: { after: 80 } }));
         });
       }
     });
@@ -1151,13 +1689,13 @@
     return D.Packer.toBlob(doc);
   }
 
-  function gerarRelatorio() {
+  function gerarRelatorio(filenameOverride) {
     var btn = document.getElementById('btn-generate');
     btn.disabled = true;
     statusEl.className = 'status';
     statusEl.textContent = 'Gerando documento...';
     buildDocx().then(function (blob) {
-      var filename = 'Relatorio_Visita_' + slug(state.meta.cidadeRegiao) + '_' + (state.meta.data || todayISO()) + '.docx';
+      var filename = filenameOverride || ('Relatorio_Visita_' + slug(state.meta.cidadeRegiao) + '_' + (state.meta.data || todayISO()) + '.docx');
       window.saveAs(blob, filename);
       statusEl.className = 'status ok';
       statusEl.textContent = 'Relatório gerado: ' + filename;
@@ -1176,6 +1714,40 @@
     });
   }
 
+  function sugerirNomeArquivo() {
+    var mercados = state.stores.map(function (s) { return s.mercado; })
+      .filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+    var base = mercados.length ? mercados.join('_') : (state.meta.cidadeRegiao || 'visita');
+    return 'Relatorio_Visita_' + slug(base) + '_' + (state.meta.data || todayISO());
+  }
+
+  function abrirModalSalvar() {
+    var overlay = document.getElementById('save-modal-overlay');
+    var nomeInput = document.getElementById('save-modal-filename');
+    var pathEl = document.getElementById('save-modal-path');
+    nomeInput.value = sugerirNomeArquivo();
+    var dataParts = (state.meta.data || todayISO()).split('-');
+    var ano = dataParts[0];
+    var mes = MESES_PT[parseInt(dataParts[1], 10) - 1] || dataParts[1];
+    pathEl.textContent = driveAccessToken
+      ? ('Será salvo no Drive em: ' + REPORTS_FOLDER_NAME + ' / ' + ano + ' / ' + mes + ' — e baixado neste aparelho.')
+      : 'Google Drive não conectado — o relatório só será baixado neste aparelho.';
+    overlay.style.display = 'flex';
+    nomeInput.focus();
+  }
+
+  function fecharModalSalvar() {
+    document.getElementById('save-modal-overlay').style.display = 'none';
+  }
+
+  document.getElementById('save-modal-cancel').addEventListener('click', fecharModalSalvar);
+  document.getElementById('save-modal-confirm').addEventListener('click', function () {
+    var nome = (document.getElementById('save-modal-filename').value || sugerirNomeArquivo()).trim();
+    if (!/\.docx$/i.test(nome)) nome += '.docx';
+    fecharModalSalvar();
+    gerarRelatorio(nome);
+  });
+
   document.getElementById('btn-generate').addEventListener('click', function () {
     if (!state.stores.length) {
       statusEl.className = 'status err';
@@ -1183,27 +1755,44 @@
       return;
     }
     if (librariesReady) {
-      gerarRelatorio();
+      abrirModalSalvar();
       return;
     }
     statusEl.className = 'status';
     statusEl.textContent = 'Tentando carregar os componentes novamente...';
     initLibraries().then(function () {
       if (librariesReady) {
-        gerarRelatorio();
+        abrirModalSalvar();
       } else {
         statusEl.className = 'status err';
         statusEl.textContent = 'Ainda não consegui carregar os componentes. Verifique sua internet e tente novamente.';
       }
     });
+
   });
 
   // ---------- init ----------
   renderMeta();
   state.stores.push(newStore());
   renderStores();
+  tryRestoreLocalDraftOnLoad();
+  loadApiKey();
   initLibraries();
   initGoogleAuth();
+
+  var btnNovaVisita = document.getElementById('btn-nova-visita');
+  if (btnNovaVisita) {
+    btnNovaVisita.addEventListener('click', function () {
+      if (!confirm('Isso vai apagar o rascunho salvo neste aparelho e começar uma visita em branco. Continuar?')) return;
+      clearLocalDraft();
+      state.meta = { marca: 'Pilecco Nobre', data: todayISO(), responsavel: 'Fernanda Kenes', cidadeRegiao: '', setor: '' };
+      state.stores = [newStore()];
+      renderMeta();
+      renderStores();
+      statusEl.className = 'status';
+      statusEl.textContent = 'Nova visita iniciada.';
+    });
+  }
 })();
 </script>
 </body>

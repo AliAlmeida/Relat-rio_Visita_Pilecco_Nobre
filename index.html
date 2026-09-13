@@ -286,10 +286,10 @@
   <section class="card" id="ai-card">
     <h2>Correção e leitura estratégica com IA (opcional)</h2>
     <div id="ai-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">
-      Cole aqui sua chave da API da Anthropic (console.anthropic.com) para liberar os botões "✨ Melhorar texto" e "✨ Gerar Leitura Estratégica". A chave fica salva só neste aparelho — nunca é enviada para o GitHub. O uso da API é pago (cobrado direto na sua conta Anthropic, valores baixos por texto).
+      Cole aqui sua chave da API do Google Gemini (aistudio.google.com/apikey) para liberar os botões "✨ Melhorar texto" e "✨ Gerar Leitura Estratégica". A chave fica salva só neste aparelho — nunca é enviada para o GitHub. O uso da API é pago (cobrado direto na sua conta Google, valores baixos por texto).
     </div>
     <div style="display:flex; gap:8px;">
-      <input type="password" id="ai-key-input" placeholder="sk-ant-..." style="flex:1;">
+      <input type="password" id="ai-key-input" placeholder="AQ...." style="flex:1;">
       <button class="btn btn-add" id="btn-ai-key-save">Salvar</button>
     </div>
   </section>
@@ -421,9 +421,9 @@
     return details;
   }
 
-  // ---------- IA (Anthropic API, chave própria do usuário) ----------
-  var ANTHROPIC_API_KEY = null;
-  var AI_MODEL = 'claude-haiku-4-5-20251001';
+  // ---------- IA (Google Gemini API, chave própria do usuário) ----------
+  var GEMINI_API_KEY = null;
+  var AI_MODEL = 'gemini-3.5-flash';
   var aiStatusEl = document.getElementById('ai-status');
   var aiKeyInput = document.getElementById('ai-key-input');
   var btnAiKeySave = document.getElementById('btn-ai-key-save');
@@ -432,49 +432,49 @@
 
   function loadApiKey() {
     try {
-      ANTHROPIC_API_KEY = window.localStorage.getItem('pilecco_anthropic_key') || null;
-    } catch (e) { ANTHROPIC_API_KEY = null; }
-    if (ANTHROPIC_API_KEY) setAiStatus('Chave de IA configurada neste aparelho. Os botões "✨" já estão liberados.');
+      GEMINI_API_KEY = window.localStorage.getItem('pilecco_gemini_key') || null;
+    } catch (e) { GEMINI_API_KEY = null; }
+    if (GEMINI_API_KEY) setAiStatus('Chave de IA (Gemini) configurada neste aparelho. Os botões "✨" já estão liberados.');
   }
 
   if (btnAiKeySave) {
     btnAiKeySave.addEventListener('click', function () {
       var val = (aiKeyInput.value || '').trim();
       if (!val) { setAiStatus('Cole uma chave válida antes de salvar.'); return; }
-      try { window.localStorage.setItem('pilecco_anthropic_key', val); } catch (e) { /* localStorage indisponível — segue só em memória */ }
-      ANTHROPIC_API_KEY = val;
+      try { window.localStorage.setItem('pilecco_gemini_key', val); } catch (e) { /* localStorage indisponível — segue só em memória */ }
+      GEMINI_API_KEY = val;
       aiKeyInput.value = '';
       setAiStatus('Chave salva neste aparelho. Os botões "✨" já estão liberados.');
     });
   }
 
-  function callClaude(systemPrompt, userPrompt, maxTokens) {
-    if (!ANTHROPIC_API_KEY) return Promise.reject(new Error('Configure sua chave de IA no card no topo da página.'));
-    return fetch('https://api.anthropic.com/v1/messages', {
+  function callGemini(systemPrompt, userPrompt, maxTokens) {
+    if (!GEMINI_API_KEY) return Promise.reject(new Error('Configure sua chave de IA no card no topo da página.'));
+    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + AI_MODEL + ':generateContent';
+    return fetch(url, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
+        'x-goog-api-key': GEMINI_API_KEY
       },
       body: JSON.stringify({
-        model: AI_MODEL,
-        max_tokens: maxTokens || 400,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }]
+        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        generationConfig: { maxOutputTokens: maxTokens || 400 }
       })
     }).then(function (res) {
       if (!res.ok) return res.text().then(function (t) { throw new Error('Erro da API (' + res.status + '): ' + t.slice(0, 200)); });
       return res.json();
     }).then(function (data) {
-      return (data.content || []).map(function (b) { return b.text || ''; }).join('').trim();
+      var cand = (data.candidates || [])[0];
+      var parts = (cand && cand.content && cand.content.parts) || [];
+      return parts.map(function (p) { return p.text || ''; }).join('').trim();
     });
   }
 
   function melhorarTextoIA(original) {
     var sys = 'Você corrige e melhora textos curtos de relatórios de visita a supermercados para trade marketing da marca Pilecco Nobre (arroz). Corrija ortografia, acentuação, pontuação e concordância. Reescreva em linguagem profissional de trade marketing, natural e objetiva, sem exageros nem termos corporativos artificiais. NÃO invente fatos, números ou informações que não estejam no texto original. Responda APENAS com o texto corrigido, sem comentários, sem aspas.';
-    return callClaude(sys, original, 300);
+    return callGemini(sys, original, 300);
   }
 
   function montarResumoLoja(store) {
@@ -521,7 +521,7 @@
   function gerarLeituraEstrategicaIA(store) {
     var resumo = montarResumoLoja(store);
     var sys = 'Você é um analista de trade marketing da marca Pilecco Nobre (arroz). Com base EXCLUSIVAMENTE nos dados fornecidos sobre uma visita a um ponto de venda, escreva uma "leitura estratégica" de 3 a 5 frases, no estilo de relatórios profissionais de campo: comece com uma avaliação geral da execução, cite evidências específicas dos dados, aponte o principal ponto de atenção ou oportunidade, e termine com uma prioridade recomendada. NUNCA invente preços, concorrentes, quantidades, vendas ou qualquer informação que não esteja explicitamente nos dados fornecidos. Se faltar informação, não presuma. Responda apenas com o texto da leitura estratégica, sem títulos, sem comentários.';
-    return callClaude(sys, resumo, 500);
+    return callGemini(sys, resumo, 500);
   }
 
   function renderMelhorarTextoUI(container, getText, applyText) {
@@ -1555,15 +1555,26 @@
       }
       var nomeLoja = [store.mercado, store.loja].filter(function (x) { return x; }).join(' — ') || 'SEM NOME';
       var headingText = (idx + 1) + '. ' + nomeLoja.toUpperCase() +
-        (store.cidade ? '  (' + store.cidade + ')' : '') +
-        (contatoParts.length ? '  ' + contatoParts.join(' ') : '');
+        (store.cidade ? '  (' + store.cidade + ')' : '');
 
-      children.push(new D.Paragraph({
+      var headingOpts = {
         children: [new D.TextRun({ text: headingText, bold: true, size: 26, color: '0A3679', font: 'Arial' })],
         alignment: D.AlignmentType.LEFT,
-        spacing: { before: 240, after: 120 },
-        border: { bottom: { color: 'E3E9F4', space: 4, style: D.BorderStyle.SINGLE, size: 8 } }
-      }));
+        spacing: { before: 240, after: contatoParts.length ? 20 : 120 }
+      };
+      if (!contatoParts.length) {
+        headingOpts.border = { bottom: { color: 'E3E9F4', space: 4, style: D.BorderStyle.SINGLE, size: 8 } };
+      }
+      children.push(new D.Paragraph(headingOpts));
+
+      if (contatoParts.length) {
+        children.push(new D.Paragraph({
+          children: [new D.TextRun({ text: contatoParts.join(' '), size: 22, font: 'Arial' })],
+          alignment: D.AlignmentType.LEFT,
+          spacing: { after: 120 },
+          border: { bottom: { color: 'E3E9F4', space: 4, style: D.BorderStyle.SINGLE, size: 8 } }
+        }));
+      }
 
       function subhead(text) {
         children.push(new D.Paragraph({
@@ -1599,9 +1610,12 @@
         store.precos.forEach(function (p) {
           if (!p.produto && !p.precoPilecco) return;
           var runs = [new D.TextRun({ text: (p.produto || '') + ': ', bold: true, size: 24, font: 'Arial' })];
-          runs.push(new D.TextRun({ text: p.precoPilecco || '-', size: 24, font: 'Arial' }));
           if (p.promocao && p.precoPromocional) {
-            runs.push(new D.TextRun({ text: '  (promoção: ' + p.precoPromocional + ')', bold: true, color: 'D9A600', size: 24, font: 'Arial' }));
+            runs.push(new D.TextRun({ text: 'de ' + (p.precoPilecco || '-') + ' por ', size: 24, font: 'Arial' }));
+            runs.push(new D.TextRun({ text: p.precoPromocional, bold: true, size: 24, font: 'Arial' }));
+            runs.push(new D.TextRun({ text: ' (oferta)', bold: true, color: 'D9A600', size: 24, font: 'Arial' }));
+          } else {
+            runs.push(new D.TextRun({ text: p.precoPilecco || '-', size: 24, font: 'Arial' }));
           }
           if (p.concorrente || p.precoConcorrente) {
             runs.push(new D.TextRun({ text: '   |   Concorrente' + (p.concorrente ? ' (' + p.concorrente + ')' : '') + ': ' + (p.precoConcorrente || '-'), size: 24, font: 'Arial' }));

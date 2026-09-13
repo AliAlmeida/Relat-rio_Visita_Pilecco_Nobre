@@ -761,32 +761,97 @@
     };
   }
 
-  // ---------- localStorage safety net (always-on, no login required) ----------
-  var LOCAL_DRAFT_KEY = 'relatorioVisitaRascunhoLocal';
+  // ---------- IndexedDB safety net (always-on, no login required, guarda fotos também) ----------
+  var IDB_NAME = 'relatorioVisitaDB';
+  var IDB_STORE = 'rascunho';
+  var IDB_KEY = 'atual';
+  var idbPromise = null;
   var localSaveTimer = null;
 
+  function openIDB() {
+    if (idbPromise) return idbPromise;
+    idbPromise = new Promise(function (resolve, reject) {
+      if (!window.indexedDB) { reject(new Error('IndexedDB indisponível neste navegador')); return; }
+      var req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = function (e) {
+        var db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = function (e) { resolve(e.target.result); };
+      req.onerror = function (e) { reject(e.target.error); };
+    });
+    return idbPromise;
+  }
+
+  function idbPut(key, value) {
+    return openIDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).put(value, key);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function (e) { reject(e.target.error); };
+      });
+    });
+  }
+
+  function idbGet(key) {
+    return openIDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, 'readonly');
+        var req = tx.objectStore(IDB_STORE).get(key);
+        req.onsuccess = function () { resolve(req.result || null); };
+        req.onerror = function (e) { reject(e.target.error); };
+      });
+    });
+  }
+
+  function idbDelete(key) {
+    return openIDB().then(function (db) {
+      return new Promise(function (resolve, reject) {
+        var tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(key);
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function (e) { reject(e.target.error); };
+      });
+    });
+  }
+
+  function buildFullSnapshot() {
+    return {
+      meta: state.meta,
+      stores: state.stores.map(function (s) {
+        return {
+          mercado: s.mercado, loja: s.loja, cidade: s.cidade,
+          contatoCargo: s.contatoCargo, contatoNome: s.contatoNome, contatoTelefone: s.contatoTelefone,
+          observacoesGerais: s.observacoesGerais,
+          observacoes: s.observacoes.map(function (o) { return { categoria: o.categoria, texto: o.texto, fotos: o.fotos }; }),
+          precos: s.precos,
+          estoque: s.estoque,
+          alertas: s.alertas.map(function (a) { return { categoria: a.categoria, texto: a.texto, fotos: a.fotos }; }),
+          oportunidades: s.oportunidades.map(function (o) { return { descricao: o.descricao, categoria: o.categoria, prioridade: o.prioridade, acaoSugerida: o.acaoSugerida, observacao: o.observacao, fotos: o.fotos }; }),
+          leituraEstrategica: s.leituraEstrategica
+        };
+      })
+    };
+  }
+
   function saveLocalDraft() {
-    try {
-      var snapshot = buildDraftSnapshot();
-      snapshot._savedAt = new Date().toISOString();
-      localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify(snapshot));
-    } catch (e) {
-      console.error('Não foi possível salvar rascunho local:', e);
-    }
+    var snapshot = buildFullSnapshot();
+    snapshot._savedAt = new Date().toISOString();
+    idbPut(IDB_KEY, snapshot).catch(function (e) {
+      console.error('Não foi possível salvar rascunho local (IndexedDB):', e);
+    });
   }
 
   function loadLocalDraft() {
-    try {
-      var raw = localStorage.getItem(LOCAL_DRAFT_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) {
+    return idbGet(IDB_KEY).catch(function (e) {
       console.error('Não foi possível ler rascunho local:', e);
       return null;
-    }
+    });
   }
 
   function clearLocalDraft() {
-    try { localStorage.removeItem(LOCAL_DRAFT_KEY); } catch (e) { /* ignore */ }
+    idbDelete(IDB_KEY).catch(function () { /* ignore */ });
   }
 
   function applyDraftToState(draft) {
@@ -799,21 +864,24 @@
         observacoesGerais: s.observacoesGerais || '',
         observacoes: (s.observacoes || []).map(function (o) {
           var obs = newObservacao(); obs.texto = o.texto || ''; obs.categoria = o.categoria || '';
-          if (o.fotoCount) obs.texto += (obs.texto ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+          if (o.fotos) { obs.fotos = o.fotos; }
+          else if (o.fotoCount) { obs.texto += (obs.texto ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]'; }
           return obs;
         }),
         precos: s.precos || [],
         estoque: s.estoque || [],
         alertas: (s.alertas || []).map(function (a) {
           var al = newAlerta(); al.texto = a.texto || ''; al.categoria = a.categoria || '';
-          if (a.fotoCount) al.texto += (al.texto ? '\n' : '') + '[' + a.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+          if (a.fotos) { al.fotos = a.fotos; }
+          else if (a.fotoCount) { al.texto += (al.texto ? '\n' : '') + '[' + a.fotoCount + ' foto(s) do rascunho — anexe novamente]'; }
           return al;
         }),
         oportunidades: (s.oportunidades || []).map(function (o) {
           var op = newOportunidade();
           op.descricao = o.descricao || ''; op.categoria = o.categoria || ''; op.prioridade = o.prioridade || '';
           op.acaoSugerida = o.acaoSugerida || ''; op.observacao = o.observacao || '';
-          if (o.fotoCount) op.observacao += (op.observacao ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]';
+          if (o.fotos) { op.fotos = o.fotos; }
+          else if (o.fotoCount) { op.observacao += (op.observacao ? '\n' : '') + '[' + o.fotoCount + ' foto(s) do rascunho — anexe novamente]'; }
           return op;
         }),
         leituraEstrategica: s.leituraEstrategica || ''
@@ -830,15 +898,16 @@
   }
 
   function tryRestoreLocalDraftOnLoad() {
-    var draft = loadLocalDraft();
-    if (!draft) return;
-    if (estadoTemDadosReais()) return;
-    var quando = draft._savedAt ? new Date(draft._savedAt).toLocaleString('pt-BR') : 'antes';
-    if (confirm('Encontrei um rascunho salvo neste aparelho (' + quando + '). Deseja continuar de onde parou?')) {
-      applyDraftToState(draft);
-    } else {
-      clearLocalDraft();
-    }
+    loadLocalDraft().then(function (draft) {
+      if (!draft) return;
+      if (estadoTemDadosReais()) return;
+      var quando = draft._savedAt ? new Date(draft._savedAt).toLocaleString('pt-BR') : 'antes';
+      if (confirm('Encontrei um rascunho salvo neste aparelho (' + quando + '), incluindo fotos. Deseja continuar de onde parou?')) {
+        applyDraftToState(draft);
+      } else {
+        clearLocalDraft();
+      }
+    });
   }
 
   function scheduleAutosave() {
@@ -972,13 +1041,19 @@
     });
   }
 
-  function uploadDocxToDrive(blob, filename, folderIdOverride) {
+  function uploadDocxToDrive(blob, filename) {
     if (!driveAccessToken) return Promise.resolve(false);
-    var folderPromise = folderIdOverride ? Promise.resolve(folderIdOverride) : getOrCreateReportsFolder();
-    return folderPromise.then(function (folderId) {
-      return driveResumableUpload({ name: filename, parents: [folderId] }, blob,
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    }).then(function (ok) {
+    var mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    return Promise.all(state.stores.map(function (s) { return getOrCreateStoreFolder(s); })).then(function (folderIds) {
+      var uniqueIds = folderIds.filter(function (id, i) { return id && folderIds.indexOf(id) === i; });
+      if (!uniqueIds.length) return getOrCreateReportsFolder().then(function (id) { return [id]; });
+      return uniqueIds;
+    }).then(function (folderIds) {
+      return Promise.all(folderIds.map(function (folderId) {
+        return driveResumableUpload({ name: filename, parents: [folderId] }, blob, mimeType);
+      }));
+    }).then(function (results) {
+      var ok = results.length > 0 && results.every(function (r) { return r; });
       if (ok) {
         return findFileByName(draftFileName()).then(function (existing) {
           if (existing) return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id, { method: 'DELETE' });
@@ -1743,8 +1818,12 @@
     var dataParts = (state.meta.data || todayISO()).split('-');
     var ano = dataParts[0];
     var mes = MESES_PT[parseInt(dataParts[1], 10) - 1] || dataParts[1];
+    var nomesLojas = state.stores.map(function (s) { return [s.mercado, s.loja].filter(function (x) { return x; }).join(' '); }).filter(function (x) { return x; });
+    var ondeSalva = nomesLojas.length
+      ? nomesLojas.map(function (n) { return REPORTS_FOLDER_NAME + ' / ' + ano + ' / ' + mes + ' / ' + n + ' / ' + formatDataBR(state.meta.data); }).join('  e  ')
+      : (REPORTS_FOLDER_NAME + ' / ' + ano + ' / ' + mes);
     pathEl.textContent = driveAccessToken
-      ? ('Será salvo no Drive em: ' + REPORTS_FOLDER_NAME + ' / ' + ano + ' / ' + mes + ' — e baixado neste aparelho.')
+      ? ('Será salvo no Drive junto das fotos, em: ' + ondeSalva + ' — e baixado neste aparelho.')
       : 'Google Drive não conectado — o relatório só será baixado neste aparelho.';
     overlay.style.display = 'flex';
     nomeInput.focus();

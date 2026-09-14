@@ -286,7 +286,7 @@
   <section class="card" id="ai-card">
     <h2>Correção e leitura estratégica com IA (opcional)</h2>
     <div id="ai-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">
-      Cole aqui sua chave da API do Google Gemini (aistudio.google.com/apikey) para liberar os botões "✨ Melhorar texto" e "✨ Gerar Leitura Estratégica". A chave fica salva só neste aparelho — nunca é enviada para o GitHub. O uso da API é pago (cobrado direto na sua conta Google, valores baixos por texto).
+      Cole aqui sua chave da API do Google Gemini (aistudio.google.com/apikey) para liberar os botões "✨ Melhorar texto" e "✨ Gerar Leitura Estratégica". A chave fica salva só neste aparelho — nunca é enviada para o GitHub. Se aparecer erro de limite, veja suas cotas em aistudio.google.com/rate-limit ou ative o faturamento no projeto do Google para aumentar os limites.
     </div>
     <div style="display:flex; gap:8px;">
       <input type="password" id="ai-key-input" placeholder="AQ...." style="flex:1;">
@@ -424,6 +424,7 @@
   // ---------- IA (Google Gemini API, chave própria do usuário) ----------
   var GEMINI_API_KEY = null;
   var AI_MODEL = 'gemini-3.5-flash';
+  var AI_MODEL_LITE = 'gemini-3.5-flash-lite';
   var aiStatusEl = document.getElementById('ai-status');
   var aiKeyInput = document.getElementById('ai-key-input');
   var btnAiKeySave = document.getElementById('btn-ai-key-save');
@@ -448,37 +449,47 @@
     });
   }
 
-  function callGemini(systemPrompt, userPrompt, maxTokens) {
+  function callGemini(systemPrompt, userPrompt, maxTokens, modelo) {
     if (!GEMINI_API_KEY) return Promise.reject(new Error('Configure sua chave de IA no card no topo da página.'));
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + AI_MODEL + ':generateContent';
-    return fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-goog-api-key': GEMINI_API_KEY
-      },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: { maxOutputTokens: maxTokens || 400, thinkingConfig: { thinkingBudget: 0 } }
-      })
-    }).then(function (res) {
-      if (!res.ok) return res.text().then(function (t) { throw new Error('Erro da API (' + res.status + '): ' + t.slice(0, 200)); });
-      return res.json();
-    }).then(function (data) {
-      var cand = (data.candidates || [])[0];
-      var parts = (cand && cand.content && cand.content.parts) || [];
-      var texto = parts.map(function (p) { return p.text || ''; }).join('').trim();
-      if (!texto && cand && cand.finishReason === 'MAX_TOKENS') {
-        throw new Error('A IA ficou sem espaço de resposta (MAX_TOKENS). Tente novamente ou encurte o texto.');
-      }
-      return texto;
-    });
+    var modeloEscolhido = modelo || AI_MODEL;
+    function tentar(nomeModelo, podeCairPraPadrao) {
+      var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + nomeModelo + ':generateContent';
+      return fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-goog-api-key': GEMINI_API_KEY
+        },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          generationConfig: { maxOutputTokens: maxTokens || 400, thinkingConfig: { thinkingBudget: 0 } }
+        })
+      }).then(function (res) {
+        if (!res.ok) {
+          // Se o modelo "lite" não existir, não estiver liberado, ou tiver batido o limite, tenta o modelo principal.
+          if (podeCairPraPadrao && (res.status === 404 || res.status === 400 || res.status === 429)) {
+            return tentar(AI_MODEL, false);
+          }
+          return res.text().then(function (t) { throw new Error('Erro da API (' + res.status + '): ' + t.slice(0, 200)); });
+        }
+        return res.json().then(function (data) {
+          var cand = (data.candidates || [])[0];
+          var parts = (cand && cand.content && cand.content.parts) || [];
+          var texto = parts.map(function (p) { return p.text || ''; }).join('').trim();
+          if (!texto && cand && cand.finishReason === 'MAX_TOKENS') {
+            throw new Error('A IA ficou sem espaço de resposta (MAX_TOKENS). Tente novamente ou encurte o texto.');
+          }
+          return texto;
+        });
+      });
+    }
+    return tentar(modeloEscolhido, modeloEscolhido !== AI_MODEL);
   }
 
   function melhorarTextoIA(original) {
     var sys = 'Você corrige e melhora textos curtos de relatórios de visita a supermercados para trade marketing da marca Pilecco Nobre (arroz). Corrija ortografia, acentuação, pontuação e concordância. Reescreva em linguagem profissional de trade marketing, natural e objetiva, sem exageros nem termos corporativos artificiais. NÃO invente fatos, números ou informações que não estejam no texto original. Responda APENAS com o texto corrigido, sem comentários, sem aspas.';
-    return callGemini(sys, original, 600);
+    return callGemini(sys, original, 600, AI_MODEL_LITE);
   }
 
   function montarResumoLoja(store) {

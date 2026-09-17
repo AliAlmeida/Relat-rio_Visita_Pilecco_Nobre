@@ -275,9 +275,12 @@
 
 <main>
   <section class="card" id="drive-card">
+    <div id="local-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--line);">
+      💾 Rascunho neste aparelho: aguardando primeira alteração...
+    </div>
     <h2>Sincronização com Google Drive (opcional)</h2>
     <div id="drive-status" style="font-size:13px; color:var(--ink-soft); margin-bottom:10px;">
-      Conecte pra salvar seu rascunho automaticamente e guardar fotos e relatórios no seu Drive.
+      Conecte pra guardar fotos e relatórios também no seu Drive (além do salvamento automático neste aparelho, que já funciona sem login).
     </div>
     <button class="btn btn-add" id="btn-google-signin" style="width:100%;">Entrar com Google</button>
     <button class="btn btn-remove-entry" id="btn-nova-visita" style="width:100%; margin-top:8px; text-align:center;">🗑 Descartar rascunho e iniciar nova visita</button>
@@ -322,6 +325,17 @@
     <div style="display:flex; gap:8px;">
       <button class="btn btn-add" id="save-modal-cancel" style="flex:1;">Cancelar</button>
       <button class="btn-generate" id="save-modal-confirm" style="flex:1.5; padding:10px;">Gerar relatório</button>
+    </div>
+  </div>
+</div>
+
+<div id="restore-modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(34,40,31,0.55); z-index:60; align-items:center; justify-content:center; padding:16px;">
+  <div style="background:var(--card); border-radius:var(--radius); padding:18px; width:100%; max-width:420px; box-shadow:0 8px 24px rgba(0,0,0,0.25);">
+    <h3 style="margin:0 0 10px; color:var(--navy); font-size:16px;">Rascunho encontrado</h3>
+    <div id="restore-modal-text" style="font-size:14px; color:var(--ink); margin-bottom:16px; line-height:1.5;"></div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-add" id="restore-modal-discard" style="flex:1;">Começar do zero</button>
+      <button class="btn-generate" id="restore-modal-confirm" style="flex:1.5; padding:10px;">Continuar de onde parei</button>
     </div>
   </div>
 </div>
@@ -850,23 +864,48 @@
     };
   }
 
+  var LS_FALLBACK_KEY = 'relatorioVisitaRascunhoTextoFallback';
+  var localStatusEl = document.getElementById('local-status');
+
+  function setLocalStatus(text, isErr) {
+    if (!localStatusEl) return;
+    localStatusEl.textContent = text;
+    localStatusEl.style.color = isErr ? 'var(--danger)' : 'var(--ink-soft)';
+  }
+
   function saveLocalDraft() {
     var snapshot = buildFullSnapshot();
     snapshot._savedAt = new Date().toISOString();
-    idbPut(IDB_KEY, snapshot).catch(function (e) {
+    idbPut(IDB_KEY, snapshot).then(function () {
+      var now = new Date();
+      setLocalStatus('💾 Rascunho salvo neste aparelho às ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + ' (com fotos).');
+    }).catch(function (e) {
       console.error('Não foi possível salvar rascunho local (IndexedDB):', e);
+      // Reserva: tenta ao menos guardar o texto (sem fotos) via localStorage, mais compatível.
+      try {
+        var leve = buildDraftSnapshot();
+        leve._savedAt = snapshot._savedAt;
+        window.localStorage.setItem(LS_FALLBACK_KEY, JSON.stringify(leve));
+        setLocalStatus('⚠️ Salvei só o texto neste aparelho (sem fotos) — o modo completo de salvamento não está disponível neste navegador.', true);
+      } catch (e2) {
+        setLocalStatus('🔴 Não consegui salvar o rascunho neste aparelho. Gere o relatório com frequência para não perder o trabalho.', true);
+      }
     });
   }
 
   function loadLocalDraft() {
     return idbGet(IDB_KEY).catch(function (e) {
-      console.error('Não foi possível ler rascunho local:', e);
-      return null;
+      console.error('Não foi possível ler rascunho local (IndexedDB):', e);
+      try {
+        var raw = window.localStorage.getItem(LS_FALLBACK_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e2) { return null; }
     });
   }
 
   function clearLocalDraft() {
     idbDelete(IDB_KEY).catch(function () { /* ignore */ });
+    try { window.localStorage.removeItem(LS_FALLBACK_KEY); } catch (e) { /* ignore */ }
   }
 
   function applyDraftToState(draft) {
@@ -912,39 +951,118 @@
     return state.stores.some(function (s) { return s.mercado || s.loja || s.observacoes.some(function (o) { return o.texto; }); });
   }
 
-  function tryRestoreLocalDraftOnLoad() {
-    loadLocalDraft().then(function (draft) {
-      if (!draft) return;
-      if (estadoTemDadosReais()) return;
+  // Modal próprio para restaurar rascunho — não usa confirm() nativo, que é
+  // pouco confiável (ou nem aparece) em navegadores embutidos (WhatsApp, Instagram etc.)
+  function perguntarRestaurarRascunho(draft, mensagemCustom) {
+    return new Promise(function (resolve) {
+      var overlay = document.getElementById('restore-modal-overlay');
+      var textEl2 = document.getElementById('restore-modal-text');
+      var btnConfirm = document.getElementById('restore-modal-confirm');
+      var btnDiscard = document.getElementById('restore-modal-discard');
       var quando = draft._savedAt ? new Date(draft._savedAt).toLocaleString('pt-BR') : 'antes';
-      if (confirm('Encontrei um rascunho salvo neste aparelho (' + quando + '), incluindo fotos. Deseja continuar de onde parou?')) {
-        applyDraftToState(draft);
-      } else {
-        clearLocalDraft();
+      textEl2.textContent = mensagemCustom || ('Encontrei um rascunho salvo neste aparelho (' + quando + '), incluindo fotos. Deseja continuar de onde parou?');
+      overlay.style.display = 'flex';
+      function limpar() {
+        overlay.style.display = 'none';
+        btnConfirm.removeEventListener('click', onConfirm);
+        btnDiscard.removeEventListener('click', onDiscard);
       }
+      function onConfirm() { limpar(); resolve(true); }
+      function onDiscard() { limpar(); resolve(false); }
+      btnConfirm.addEventListener('click', onConfirm);
+      btnDiscard.addEventListener('click', onDiscard);
     });
   }
+
+  // Verifica e, se preciso, restaura o rascunho ANTES de criar a loja em branco
+  // padrão e antes de qualquer autosave rodar — evita que um salvamento do
+  // estado vazio inicial sobrescreva um rascunho real por causa de timing.
+  function iniciarComOuSemRascunho() {
+    return loadLocalDraft().then(function (draft) {
+      if (!draft) {
+        setLocalStatus('💾 Rascunho neste aparelho: nada salvo ainda.');
+        return false;
+      }
+      return perguntarRestaurarRascunho(draft).then(function (querRestaurar) {
+        if (querRestaurar) {
+          applyDraftToState(draft);
+          setLocalStatus('💾 Rascunho restaurado deste aparelho.');
+          return true;
+        } else {
+          clearLocalDraft();
+          setLocalStatus('💾 Rascunho anterior descartado. Começando visita em branco.');
+          return false;
+        }
+      });
+    }).catch(function (e) {
+      console.error(e);
+      setLocalStatus('⚠️ Não consegui verificar rascunhos salvos neste aparelho.', true);
+      return false;
+    });
+  }
+
+  var driveSyncPendingRetry = false;
+  var lastWordBackupAt = 0;
 
   function scheduleAutosave() {
     clearTimeout(localSaveTimer);
     localSaveTimer = setTimeout(saveLocalDraft, 800);
     if (!driveAccessToken) return;
     clearTimeout(autosaveTimer);
+    if (!navigator.onLine) {
+      setDriveStatus('🔴 Sem internet agora — rascunho local continua seguro. Vai sincronizar com o Drive assim que a conexão voltar.');
+      driveSyncPendingRetry = true;
+      return;
+    }
     setDriveStatus('🟡 Alterações pendentes...');
-    autosaveTimer = setTimeout(function () {
-      setDriveStatus('🟡 Salvando rascunho no Drive...');
-      var name = draftFileName();
-      findFileByName(name).then(function (existing) {
-        return saveJSONFile(name, buildDraftSnapshot(), existing ? existing.id : null);
-      }).then(function () {
-        var now = new Date();
-        setDriveStatus('🟢 Rascunho salvo no Drive às ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + '.');
-      }).catch(function (err) {
-        console.error(err);
-        setDriveStatus('🔴 Não consegui salvar no Drive agora (rascunho local continua seguro). Vai tentar de novo na próxima alteração.');
-      });
-    }, 3000);
+    autosaveTimer = setTimeout(sincronizarComDrive, 3000);
   }
+
+  function sincronizarComDrive() {
+    if (!driveAccessToken) return;
+    if (!navigator.onLine) {
+      setDriveStatus('🔴 Sem internet agora — rascunho local continua seguro. Vai sincronizar assim que a conexão voltar.');
+      driveSyncPendingRetry = true;
+      return;
+    }
+    setDriveStatus('🟡 Salvando rascunho no Drive...');
+    var name = draftFileName();
+    findFileByName(name).then(function (existing) {
+      return saveJSONFile(name, buildDraftSnapshot(), existing ? existing.id : null);
+    }).then(function () {
+      driveSyncPendingRetry = false;
+      var now = new Date();
+      setDriveStatus('🟢 Rascunho salvo no Drive às ' + String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') + '.');
+      // Backup real em Word no Drive, no máximo 1x por minuto (não bloqueia o fluxo se falhar).
+      var agora = Date.now();
+      if (agora - lastWordBackupAt > 60000 && estadoTemDadosReais()) {
+        lastWordBackupAt = agora;
+        backupWordParaDrive();
+      }
+    }).catch(function (err) {
+      console.error(err);
+      driveSyncPendingRetry = true;
+      setDriveStatus('🔴 Não consegui salvar no Drive agora (rascunho local continua seguro). Vai tentar de novo.');
+    });
+  }
+
+  function backupWordParaDrive() {
+    if (!window.docx || !window.saveAs || !driveAccessToken) return;
+    buildDocx().then(function (blob) {
+      var filename = 'RASCUNHO_EM_ANDAMENTO_' + sugerirNomeArquivo();
+      return uploadDocxToDrive(blob, filename, true);
+    }).catch(function (err) { console.error('Backup em Word para o Drive falhou (não é crítico):', err); });
+  }
+
+  window.addEventListener('online', function () {
+    setLocalStatus('💾 Conexão voltou.');
+    if (driveAccessToken && driveSyncPendingRetry) {
+      sincronizarComDrive();
+    }
+  });
+  window.addEventListener('offline', function () {
+    if (driveAccessToken) setDriveStatus('🔴 Sem internet — o rascunho local continua salvando normalmente neste aparelho.');
+  });
 
   function tryRestoreDraftForToday() {
     var name = draftFileName();
@@ -954,8 +1072,10 @@
       return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id + '?alt=media')
         .then(function (res) { return res.json(); })
         .then(function (draft) {
-          if (!confirm('Encontrei um rascunho salvo de hoje no Drive (' + state.meta.data + '). Deseja continuar de onde parou?')) return;
-          applyDraftToState(draft);
+          var msg = 'Encontrei um rascunho salvo de hoje no Google Drive (' + state.meta.data + '). Deseja continuar de onde parou?';
+          return perguntarRestaurarRascunho(draft, msg).then(function (querRestaurar) {
+            if (querRestaurar) applyDraftToState(draft);
+          });
         });
     }).catch(function (err) { console.error(err); });
   }
@@ -1056,7 +1176,7 @@
     });
   }
 
-  function uploadDocxToDrive(blob, filename) {
+  function uploadDocxToDrive(blob, filename, isBackup) {
     if (!driveAccessToken) return Promise.resolve(false);
     var mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     return Promise.all(state.stores.map(function (s) { return getOrCreateStoreFolder(s); })).then(function (folderIds) {
@@ -1069,12 +1189,12 @@
       }));
     }).then(function (results) {
       var ok = results.length > 0 && results.every(function (r) { return r; });
-      if (ok) {
+      if (ok && !isBackup) {
         return findFileByName(draftFileName()).then(function (existing) {
           if (existing) return driveFetch('https://www.googleapis.com/drive/v3/files/' + existing.id, { method: 'DELETE' });
         }).then(function () { return true; });
       }
-      return false;
+      return ok;
     }).catch(function (err) { console.error(err); return false; });
   }
 
@@ -1881,12 +2001,15 @@
 
   // ---------- init ----------
   renderMeta();
-  state.stores.push(newStore());
-  renderStores();
-  tryRestoreLocalDraftOnLoad();
   loadApiKey();
   initLibraries();
   initGoogleAuth();
+  iniciarComOuSemRascunho().then(function (restaurou) {
+    if (!restaurou) {
+      state.stores.push(newStore());
+      renderStores();
+    }
+  });
 
   var btnNovaVisita = document.getElementById('btn-nova-visita');
   if (btnNovaVisita) {

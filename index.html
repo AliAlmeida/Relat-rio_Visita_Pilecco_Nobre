@@ -1426,8 +1426,6 @@
     row3.appendChild(labeledInput('Telefone', store.contatoTelefone, function (v) { store.contatoTelefone = v; }, '(19) 99999-9999'));
     body.appendChild(row3);
 
-    body.appendChild(labeledInput('Observações gerais', store.observacoesGerais, function (v) { store.observacoesGerais = v; }, 'Notas gerais sobre a visita a esta loja...', 'textarea'));
-
     // Ações e observações
     body.appendChild(renderListSection({
       title: 'Ações e observações',
@@ -1436,7 +1434,6 @@
       store: store,
       placeholder: 'Ex: O Arborio está bem abastecido e com bom posicionamento...',
       withPhotos: true,
-      categorias: CATEGORIAS_ACAO,
       onAdd: function () { store.observacoes.push(newObservacao()); renderStores(); },
       onRemove: function (i) { store.observacoes.splice(i, 1); renderStores(); }
     }));
@@ -1585,13 +1582,7 @@
         entry.appendChild(currencyInput('Preço promocional', preco.precoPromocional, function (v) { preco.precoPromocional = v; }));
       }
 
-      var rowConc = el('div', { class: 'row2' });
-      rowConc.appendChild(labeledInput('Concorrente', preco.concorrente, function (v) { preco.concorrente = v; }, 'Ex: Camil'));
-      var precoConcWrap = currencyInput('Preço do concorrente', preco.precoConcorrente, function (v) { preco.precoConcorrente = v; });
-      rowConc.appendChild(precoConcWrap);
-      entry.appendChild(rowConc);
-
-      entry.appendChild(labeledInput('Observação', preco.observacao, function (v) { preco.observacao = v; }, 'Ex: sem etiqueta de preço'));
+      entry.appendChild(labeledInput('Concorrente', preco.concorrente, function (v) { preco.concorrente = v; }, 'Ex: Camil'));
 
       section.appendChild(entry);
     });
@@ -1654,8 +1645,6 @@
       entry.appendChild(renderMelhorarTextoUI(entry, function () { return descTa.value; }, function (novo) {
         op.descricao = novo; descTa.value = novo; scheduleAutosave();
       }));
-
-      entry.appendChild(labeledInput('Ação sugerida', op.acaoSugerida, function (v) { op.acaoSugerida = v; }, 'Ex: Negociar ponto extra'));
 
       if (op.fotos.length) {
         entry.appendChild(renderPhotosRow(op.fotos, function (photoIdx) {
